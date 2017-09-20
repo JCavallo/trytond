@@ -2,23 +2,32 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
 import logging
-import time
 import pydoc
+import time
+import traceback
 
+from werkzeug.utils import redirect
+from werkzeug.exceptions import abort
 from sql import Table
 
-from trytond.pool import Pool
 from trytond import security
 from trytond import backend
 from trytond.config import config
 from trytond import __version__
 from trytond.transaction import Transaction
-from trytond.cache import Cache
-from trytond.exceptions import UserError, UserWarning, NotLogged, \
-    ConcurrencyException
+from trytond.exceptions import (
+    UserError, UserWarning, ConcurrencyException, LoginException,
+    RateLimitException)
 from trytond.tools import is_instance_method
+from trytond.wsgi import app
+from trytond.perf_analyzer import PerfLog, profile
+from trytond.perf_analyzer import logger as perf_logger
+from trytond.sentry import sentry_wrap
+from .wrappers import with_pool
 
 logger = logging.getLogger(__name__)
+# JCA : enable performance log mode to ease slow calls detection
+log_threshold = config.getfloat('web', 'log_time_threshold', default=-1)
 
 ir_configuration = Table('ir_configuration')
 ir_lang = Table('ir_lang')
@@ -26,140 +35,172 @@ ir_module = Table('ir_module')
 res_user = Table('res_user')
 
 
-def dispatch(host, port, protocol, database_name, user, session, object_type,
-        object_name, method, *args, **kwargs):
+def log_exception(method, *args, **kwargs):
+    kwargs['exc_info'] = False
+    method(*args, **kwargs)
+    for elem in traceback.format_exc().split('\n'):
+        method(elem)
+
+
+@app.route('/<string:database_name>/', methods=['POST'])
+def rpc(request, database_name):
+    methods = {
+        'common.db.login': login,
+        'common.db.logout': logout,
+        'system.listMethods': list_method,
+        'system.methodHelp': help_method,
+        'system.methodSignature': lambda *a: 'signatures not supported',
+        }
+    return methods.get(request.rpc_method, _dispatch)(
+        request, database_name, *request.rpc_params)
+
+
+def login(request, database_name, user, parameters, language=None):
     Database = backend.get('Database')
-    # What if there is no session (XMLRPC)
-    # (proteus)
     DatabaseOperationalError = backend.get('DatabaseOperationalError')
-    if object_type == 'common':
-        if method == 'login':
-            try:
-                database = Database(database_name).connect()
-                cursor = database.cursor()
-                cursor.close()
-            except Exception:
-                return False
-            res = security.login(database_name, user, session)
-            with Transaction().start(database_name, 0):
-                Cache.clean(database_name)
-                Cache.resets(database_name)
-            msg = res and 'successful login' or 'bad login or password'
-            logger.info('%s \'%s\' from %s:%d using %s on database \'%s\'',
-                msg, user, host, port, protocol, database_name)
-            return res or False
-        elif method == 'logout':
-            name = security.logout(database_name, user, session)
-            logger.info('logout \'%s\' from %s:%d '
-                'using %s on database \'%s\'',
-                name, host, port, protocol, database_name)
-            return True
-        elif method == 'version':
-            return __version__
-        elif method == 'list_lang':
-            return [
-                ('bg_BG', 'Български'),
-                ('ca_ES', 'Català'),
-                ('cs_CZ', 'Čeština'),
-                ('de_DE', 'Deutsch'),
-                ('en_US', 'English'),
-                ('es_AR', 'Español (Argentina)'),
-                ('es_EC', 'Español (Ecuador)'),
-                ('es_ES', 'Español (España)'),
-                ('es_CO', 'Español (Colombia)'),
-                ('es_MX', 'Español (México)'),
-                ('fr_FR', 'Français'),
-                ('hu_HU', 'Magyar'),
-                ('it_IT', 'Italiano'),
-                ('lt_LT', 'Lietuvių'),
-                ('nl_NL', 'Nederlands'),
-                ('pt_BR', 'Português (Brasil)'),
-                ('ru_RU', 'Russian'),
-                ('sl_SI', 'Slovenščina'),
-            ]
-        elif method == 'db_exist':
-            try:
-                database = Database(*args, **kwargs).connect()
-                cursor = database.cursor()
-                cursor.close(close=True)
-                return True
-            except Exception:
-                return False
-        elif method == 'list':
-            if not config.getboolean('database', 'list'):
-                raise Exception('AccessDenied')
-            with Transaction().start(None, 0, close=True) as transaction:
-                return transaction.database.list(transaction.cursor)
-        elif method == 'create':
-            return create(*args, **kwargs)
-        elif method == 'restore':
-            return restore(*args, **kwargs)
-        elif method == 'drop':
-            return drop(*args, **kwargs)
-        elif method == 'dump':
-            return dump(*args, **kwargs)
-        return
-    elif object_type == 'system':
-        database = Database(database_name).connect()
-        database_list = Pool.database_list()
-        pool = Pool(database_name)
-        if database_name not in database_list:
-            pool.init()
-        if method == 'listMethods':
-            res = []
-            for type in ('model', 'wizard', 'report'):
-                for object_name, obj in pool.iterobject(type=type):
-                    for method in obj.__rpc__:
-                        res.append(type + '.' + object_name + '.' + method)
-            return res
-        elif method == 'methodSignature':
-            return 'signatures not supported'
-        elif method == 'methodHelp':
-            res = []
-            args_list = args[0].split('.')
-            object_type = args_list[0]
-            object_name = '.'.join(args_list[1:-1])
-            method = args_list[-1]
-            obj = pool.get(object_name, type=object_type)
-            return pydoc.getdoc(getattr(obj, method))
+    try:
+        Database(database_name).connect()
+    except DatabaseOperationalError:
+        logger.error('fail to connect to %s', database_name, exc_info=True)
+        abort(404)
+    try:
+        session = security.login(
+            database_name, user, parameters, language=language)
+        code = 403
+    except RateLimitException:
+        session = None
+        code = 429
+    msg = 'successful login' if session else 'bad login or password'
+    logger.info('%s \'%s\' from %s using %s on database \'%s\'',
+        msg, user, request.remote_addr, request.scheme, database_name)
+    if not session:
+        abort(code)
+    return session
 
-    for count in range(config.getint('database', 'retry'), -1, -1):
-        try:
-            user = security.check(database_name, user, session)
-        except DatabaseOperationalError:
-            if count:
-                continue
-            raise
-        break
 
-    database_list = Pool.database_list()
-    pool = Pool(database_name)
-    if database_name not in database_list:
-        with Transaction().start(database_name, user,
-                readonly=True) as transaction:
-            pool.init()
-    obj = pool.get(object_name, type=object_type)
+@app.auth_required
+def logout(request, database_name):
+    auth = request.authorization
+    name = security.logout(
+        database_name, auth.get('userid'), auth.get('session'))
+    logger.info('logout \'%s\' from %s using %s on database \'%s\'',
+        name, request.remote_addr, request.scheme, database_name)
+    return True
 
+
+@app.route('/', methods=['POST'])
+def root(request, *args):
+    methods = {
+        'common.server.version': lambda *a: __version__,
+        'common.db.list': db_list,
+        }
+    return methods[request.rpc_method](request, *request.rpc_params)
+
+
+@app.route('/', methods=['GET'])
+def home(request):
+    return redirect('/index.html')  # XXX find a better way
+
+
+# AKE: route to bench index.html
+@app.route('/bench/', methods=['GET'])
+def bench(request):
+    return redirect('/bench/index.html')  # XXX find a better way
+
+
+def db_exist(request, database_name):
+    Database = backend.get('Database')
+    try:
+        Database(database_name).connect()
+        return True
+    except Exception:
+        return False
+
+
+def db_list(*args):
+    if not config.getboolean('database', 'list'):
+        raise Exception('AccessDenied')
+    with Transaction().start(
+            None, 0, close=True, _nocache=True) as transaction:
+        return transaction.database.list()
+
+
+@app.auth_required
+@with_pool
+def list_method(request, pool):
+    methods = []
+    for type in ('model', 'wizard', 'report'):
+        for object_name, obj in pool.iterobject(type=type):
+            for method in obj.__rpc__:
+                methods.append(type + '.' + object_name + '.' + method)
+    return methods
+
+
+def get_object_method(request, pool):
+    method = request.rpc_method
+    type, _ = method.split('.', 1)
+    name = '.'.join(method.split('.')[1:-1])
+    method = method.split('.')[-1]
+    return pool.get(name, type=type), method
+
+
+@app.auth_required
+@with_pool
+def help_method(request, pool):
+    obj, method = get_object_method(request, pool)
+    return pydoc.getdoc(getattr(obj, method))
+
+
+@sentry_wrap  # hide tech exceptions and send then to sentry
+@app.auth_required
+@with_pool
+def _dispatch(request, pool, *args, **kwargs):
+    DatabaseOperationalError = backend.get('DatabaseOperationalError')
+
+    obj, method = get_object_method(request, pool)
     if method in obj.__rpc__:
         rpc = obj.__rpc__[method]
     else:
-        raise UserError('Calling method %s on %s %s is not allowed!'
-            % (method, object_type, object_name))
+        raise UserError('Calling method %s on %s is not allowed'
+            % (method, obj))
 
-    log_message = '%s.%s.%s(*%s, **%s) from %s@%s:%d/%s'
-    log_args = (object_type, object_name, method, args, kwargs,
-        user, host, port, database_name)
+    # JCA : If log_threshold is != -1, we only log the times for calls that
+    # exceed the configured value
+    if log_threshold == -1:
+        log_message = '%s.%s(*%s, **%s) from %s@%s/%s'
+        username = request.authorization.username.decode('utf-8')
+        log_args = (obj, method, args, kwargs,
+            username, request.remote_addr, request.path)
+        logger.info(log_message, *log_args)
+    else:
+        log_message = '%s.%s (%s s)'
+        log_args = (obj, method)
+        log_start = time.time()
 
-    logger.info(log_message, *log_args)
+    user = request.user_id
+    session = None
+    if request.authorization.type == 'session':
+        session = request.authorization.get('session')
+
     for count in range(config.getint('database', 'retry'), -1, -1):
-        with Transaction().start(database_name, user,
+        with Transaction().start(pool.database_name, user,
                 readonly=rpc.readonly,
                 context={'session': session}) as transaction:
-            Cache.clean(database_name)
+            try:
+                PerfLog().on_enter(user, session,
+                    request.rpc_method, args, kwargs)
+            except:
+                perf_logger.exception('on_enter failed')
             try:
                 c_args, c_kwargs, transaction.context, transaction.timestamp \
                     = rpc.convert(obj, *args, **kwargs)
                 meth = getattr(obj, method)
+                try:
+                    wrapped_meth = profile(meth)
+                except:
+                    perf_logger.exception('profile failed')
+                else:
+                    meth = wrapped_meth
                 if (rpc.instantiate is None
                         or not is_instance_method(obj, method)):
                     result = rpc.result(meth(*c_args, **c_kwargs))
@@ -171,151 +212,48 @@ def dispatch(host, port, protocol, database_name, user, session, object_type,
                     else:
                         result = [rpc.result(meth(i, *c_args, **c_kwargs))
                             for i in inst]
-                if not rpc.readonly:
-                    transaction.cursor.commit()
             except DatabaseOperationalError:
-                transaction.cursor.rollback()
                 if count and not rpc.readonly:
+                    transaction.rollback()
                     continue
+                if log_threshold != -1:
+                    log_end = time.time()
+                    log_args += (str(log_end - log_start),)
+                log_exception(logger.error, log_message, *log_args)
                 raise
-            except (NotLogged, ConcurrencyException, UserError, UserWarning):
-                logger.debug(log_message, *log_args, exc_info=True)
-                transaction.cursor.rollback()
+            except (ConcurrencyException, UserError, UserWarning,
+                    LoginException):
+                if log_threshold != -1:
+                    log_end = time.time()
+                    log_args += (str(log_end - log_start),)
+                log_exception(logger.debug, log_message, *log_args)
                 raise
             except Exception:
-                logger.error(log_message, *log_args, exc_info=True)
-                transaction.cursor.rollback()
+                if log_threshold != -1:
+                    log_end = time.time()
+                    log_args += (str(log_end - log_start),)
+                log_exception(logger.error, log_message, *log_args)
                 raise
-            Cache.resets(database_name)
-        with Transaction().start(database_name, 0) as transaction:
-            pool = Pool(database_name)
-            Session = pool.get('ir.session')
+            # Need to commit to unlock SQLite database
+            transaction.commit()
+        if request.authorization.type == 'session':
             try:
-                Session.reset(session)
+                with Transaction().start(pool.database_name, 0) as transaction:
+                    Session = pool.get('ir.session')
+                    Session.reset(request.authorization.get('session'))
             except DatabaseOperationalError:
-                logger.debug('Reset session failed', exc_info=True)
-                # Silently fail when reseting session
-                transaction.cursor.rollback()
-            else:
-                transaction.cursor.commit()
-        logger.debug('Result: %s', result)
-        return result
-
-
-def create(database_name, password, lang, admin_password):
-    '''
-    Create a database
-
-    :param database_name: the database name
-    :param password: the server password
-    :param lang: the default language for the database
-    :param admin_password: the admin password
-    :return: True if succeed
-    '''
-    Database = backend.get('Database')
-    security.check_super(password)
-    res = False
-
-    try:
-        with Transaction().start(None, 0, close=True, autocommit=True) \
-                as transaction:
-            transaction.database.create(transaction.cursor, database_name)
-            transaction.cursor.commit()
-
-        with Transaction().start(database_name, 0) as transaction:
-            Database.init(transaction.cursor)
-            transaction.cursor.execute(*ir_configuration.insert(
-                    [ir_configuration.language], [[lang]]))
-            transaction.cursor.commit()
-
-        pool = Pool(database_name)
-        pool.init(update=['res', 'ir'], lang=[lang])
-        with Transaction().start(database_name, 0) as transaction:
-            User = pool.get('res.user')
-            Lang = pool.get('ir.lang')
-            language, = Lang.search([('code', '=', lang)])
-            language.translatable = True
-            language.save()
-            users = User.search([('login', '!=', 'root')])
-            User.write(users, {
-                    'language': language.id,
-                    })
-            admin, = User.search([('login', '=', 'admin')])
-            User.write([admin], {
-                    'password': admin_password,
-                    })
-            Module = pool.get('ir.module')
-            if Module:
-                Module.update_list()
-            transaction.cursor.commit()
-            res = True
-    except Exception:
-        logger.error('CREATE DB: %s failed', database_name, exc_info=True)
-        raise
-    else:
-        logger.info('CREATE DB: %s', database_name)
-    return res
-
-
-def drop(database_name, password):
-    Database = backend.get('Database')
-    security.check_super(password)
-    Database(database_name).close()
-    # Sleep to let connections close
-    time.sleep(1)
-
-    with Transaction().start(None, 0, close=True, autocommit=True) \
-            as transaction:
-        cursor = transaction.cursor
-        try:
-            Database.drop(cursor, database_name)
-            cursor.commit()
-        except Exception:
-            logger.error('DROP DB: %s failed', database_name, exc_info=True)
-            raise
+                log_exception(logger.debug, 'Reset session failed')
+        if log_threshold == -1:
+            logger.debug('Result: %s', result)
         else:
-            logger.info('DROP DB: %s', database_name)
-            Pool.stop(database_name)
-            Cache.drop(database_name)
-    return True
-
-
-def dump(database_name, password):
-    Database = backend.get('Database')
-    security.check_super(password)
-    Database(database_name).close()
-    # Sleep to let connections close
-    time.sleep(1)
-
-    data = Database.dump(database_name)
-    logger.info('DUMP DB: %s', database_name)
-    if bytes == str:
-        return bytearray(data)
-    else:
-        return bytes(data)
-
-
-def restore(database_name, password, data, update=False):
-    Database = backend.get('Database')
-    security.check_super(password)
-    try:
-        database = Database().connect()
-        cursor = database.cursor()
-        cursor.close(close=True)
-        raise Exception("Database already exists!")
-    except Exception:
-        pass
-    Database.restore(database_name, data)
-    logger.info('RESTORE DB: %s', database_name)
-    if update:
-        with Transaction().start(database_name, 0) as transaction:
-            cursor = transaction.cursor
-            cursor.execute(*ir_lang.select(ir_lang.code,
-                    where=ir_lang.translatable))
-            lang = [x[0] for x in cursor.fetchall()]
-            cursor.execute(*ir_module.select(ir_module.name,
-                    where=(ir_module.state == 'installed')))
-            update = [x[0] for x in cursor.fetchall()]
-        Pool(database_name).init(update=update, lang=lang)
-        logger.info('Update/Init succeed!')
-    return True
+            log_end = time.time()
+            log_args += (str(log_end - log_start),)
+            if log_end - log_start > log_threshold:
+                logger.info(log_message, *log_args)
+            else:
+                logger.debug(log_message, *log_args)
+        try:
+            PerfLog().on_leave(result)
+        except:
+            perf_logger.exception('on_leave failed')
+        return result

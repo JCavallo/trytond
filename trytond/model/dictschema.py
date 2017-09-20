@@ -1,10 +1,7 @@
 # This file is part of Tryton.  The COPYRIGHT file at the toplevel of this
 # repository contains the full copyright notices and license terms.
+import json
 from collections import OrderedDict
-try:
-    import simplejson as json
-except ImportError:
-    import json
 
 from trytond.model import fields
 from trytond.pyson import Eval
@@ -63,7 +60,7 @@ class DictSchemaMixin(object):
         db_selection = self.selection or ''
         selection = [[w.strip() for w in v.split(':', 1)]
             for v in db_selection.splitlines() if v]
-        return json.dumps(selection)
+        return json.dumps(selection, separators=(',', ':'))
 
     @classmethod
     def get_keys(cls, records):

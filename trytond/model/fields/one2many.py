@@ -5,15 +5,10 @@ from sql import Cast, Literal
 from sql.functions import Substring, Position
 from sql.conditionals import Coalesce
 
-from .field import Field, size_validate
+from .field import Field, size_validate, instanciate_values, domain_validate
 from ...pool import Pool
 from ...tools import grouped_slice
 from ...transaction import Transaction
-
-
-def add_remove_validate(value):
-    if value:
-        assert isinstance(value, list), 'add_remove must be a list'
 
 
 class One2Many(Field):
@@ -24,8 +19,8 @@ class One2Many(Field):
 
     def __init__(self, model_name, field, string='', add_remove=None,
             order=None, datetime_field=None, size=None, help='',
-            required=False, readonly=False, domain=None, states=None,
-            on_change=None, on_change_with=None, depends=None,
+            required=False, readonly=False, domain=None, filter=None,
+            states=None, on_change=None, on_change_with=None, depends=None,
             context=None, loading='lazy'):
         '''
         :param model_name: The name of the target model.
@@ -38,6 +33,7 @@ class One2Many(Field):
             allowing to specify the order of result.
         :param datetime_field: The name of the field that contains the datetime
             value to read the target records.
+        :param filter: A domain to filter target records.
         '''
         if datetime_field:
             if depends:
@@ -56,6 +52,8 @@ class One2Many(Field):
         self.datetime_field = datetime_field
         self.__size = None
         self.size = size
+        self.__filter = None
+        self.filter = filter
 
     __init__.__doc__ += Field.__init__.__doc__
 
@@ -63,7 +61,8 @@ class One2Many(Field):
         return self.__add_remove
 
     def _set_add_remove(self, value):
-        add_remove_validate(value)
+        if value is not None:
+            domain_validate(value)
         self.__add_remove = value
 
     add_remove = property(_get_add_remove, _set_add_remove)
@@ -76,6 +75,19 @@ class One2Many(Field):
         self.__size = value
 
     size = property(_get_size, _set_size)
+
+    def sql_type(self):
+        return None
+
+    @property
+    def filter(self):
+        return self.__filter
+
+    @filter.setter
+    def filter(self, value):
+        if value is not None:
+            domain_validate(value)
+        self.__filter = value
 
     def get(self, ids, model, name, values=None):
         '''
@@ -95,6 +107,8 @@ class One2Many(Field):
                 clause = [(self.field, 'in', references)]
             else:
                 clause = [(self.field, 'in', list(sub_ids))]
+            if self.filter:
+                clause.append(self.filter)
             targets.append(Relation.search(clause, order=self.order))
         targets = list(chain(*targets))
 
@@ -213,16 +227,7 @@ class One2Many(Field):
 
     def __set__(self, inst, value):
         Target = self.get_target()
-
-        def instance(data):
-            if isinstance(data, Target):
-                return data
-            elif isinstance(data, dict):
-                return Target(**data)
-            else:
-                return Target(data)
-        value = tuple(instance(x) for x in (value or []))
-        super(One2Many, self).__set__(inst, value)
+        super(One2Many, self).__set__(inst, instanciate_values(Target, value))
 
     def convert_domain(self, domain, tables, Model):
         from ..modelsql import convert_from
@@ -232,6 +237,7 @@ class One2Many(Field):
         transaction = Transaction()
         table, _ = tables[None]
         name, operator, value = domain[:3]
+        assert operator not in {'where', 'not where'} or '.' not in name
 
         if Target._history and transaction.context.get('_datetime'):
             target = Target.__table_history__()
@@ -269,7 +275,10 @@ class One2Many(Field):
                     target_name = 'id'
         else:
             _, target_name = name.split('.', 1)
-        target_domain = [(target_name,) + tuple(domain[1:])]
+        if operator not in {'where', 'not where'}:
+            target_domain = [(target_name,) + tuple(domain[1:])]
+        else:
+            target_domain = value
         if origin_field._type == 'reference':
             target_domain.append(
                 (self.field, 'like', Model.__name__ + ',%'))
@@ -283,4 +292,8 @@ class One2Many(Field):
             target_domain, tables=target_tables)
         query_table = convert_from(None, target_tables)
         query = query_table.select(origin, where=expression)
-        return table.id.in_(query)
+        expression = table.id.in_(query)
+
+        if operator == 'not where':
+            expression = ~expression
+        return expression

@@ -1,21 +1,21 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
+import hashlib
 
 
 class TableHandlerInterface(object):
     '''
     Define generic interface to handle database table
     '''
+    namedatalen = None
 
-    def __init__(self, cursor, model, module_name=None, history=False):
+    def __init__(self, model, module_name=None, history=False):
         '''
-        :param cursor: the database cursor
         :param model: the Model linked to the table
         :param module_name: the module name
         :param history: a boolean to define if it is a history table
         '''
         super(TableHandlerInterface, self).__init__()
-        self.cursor = cursor
         if history:
             self.table_name = model._table + '__history'
         else:
@@ -29,44 +29,40 @@ class TableHandlerInterface(object):
         self.history = history
 
     @staticmethod
-    def table_exist(cursor, table_name):
+    def table_exist(table_name):
         '''
         Table exist
 
-        :param cursor: the database cursor
         :param table_name: the table name
         :return: a boolean
         '''
         raise NotImplementedError
 
     @staticmethod
-    def table_rename(cursor, old_name, new_name):
+    def table_rename(old_name, new_name):
         '''
         Rename table
 
-        :param cursor: the database cursor
         :param old_name: the old table name
         :param new_name: the new table name
         '''
         raise NotImplementedError
 
     @staticmethod
-    def sequence_exist(cursor, sequence_name):
+    def sequence_exist(sequence_name):
         '''
         Sequence exist
 
-        :param cursor: the database cursor
         :param sequence_name: the sequence name
         :return: a boolean
         '''
         raise NotImplementedError
 
     @staticmethod
-    def sequence_rename(cursor, old_name, new_name):
+    def sequence_rename(old_name, new_name):
         '''
         Rename sequence
 
-        :param cursor: the database cursor
         :param old_name: the old sequence name
         :param new_name: the new sequence name
         '''
@@ -119,19 +115,14 @@ class TableHandlerInterface(object):
         '''
         raise NotImplementedError
 
-    def add_raw_column(self, column_name, column_type, column_format,
-            default_fun=None, field_size=None, migrate=True,
-            string=''):
+    def add_column(self, column_name, abstract_type, default=None, comment=''):
         '''
         Add a column
 
         :param column_name: the column name
-        :param column_type: the column definition
-        :param column_format: the function to format default value
-        :param default_fun: the function that return the default value
-        :param field_size: the size of the column if there is one
-        :param migrate: boolean to try to migrate the column if exists
-        :param string: the label of the column
+        :param abstract_type: the abstract type that will represent this column
+        :param default: the method that return default value to use
+        :param comment: An optional comment on the column
         '''
         raise NotImplementedError
 
@@ -206,7 +197,7 @@ class TableHandlerInterface(object):
         raise NotImplementedError
 
     @staticmethod
-    def drop_table(cursor, model, table, cascade=False):
+    def drop_table(model, table, cascade=False):
         '''
         Remove a table and clean ir_model_data from the given model.
 
@@ -215,3 +206,16 @@ class TableHandlerInterface(object):
         :param cascade: a boolean to add "CASCADE" to the delete query
         '''
         raise NotImplementedError
+
+    @classmethod
+    def convert_name(cls, name):
+        '''
+        Convert data name in respect of namedatalen.
+
+        :param name: the data name
+        '''
+        if cls.namedatalen and len(name) >= cls.namedatalen:
+            if isinstance(name, unicode):
+                name = name.encode('utf-8')
+            name = hashlib.sha256(name).hexdigest()[:cls.namedatalen - 1]
+        return name

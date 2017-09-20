@@ -21,11 +21,6 @@
   </define>
   <define name="attlist.form" combine="interleave">
     <optional>
-      <attribute name="string" a:defaultValue="Unknown"/>
-    </optional>
-  </define>
-  <define name="attlist.form" combine="interleave">
-    <optional>
       <attribute name="on_write"/>
     </optional>
   </define>
@@ -166,23 +161,7 @@
           <value>richtext</value>
           <value>dict</value>
           <value>multiselection</value>
-          <value>source</value>
-          <value>many2many_selection</value>
-        </choice>
-      </attribute>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="context_tree"/>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="no_command">
-        <choice>
-          <value>0</value>
-          <value>1</value>
+          <value>pyson</value>
         </choice>
       </attribute>
     </optional>
@@ -299,21 +278,6 @@
   </define>
   <define name="attlist.field" combine="interleave">
     <optional>
-      <attribute name="group"/>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="relation"/>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="relation_field"/>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
       <attribute name="view_ids"/>
     </optional>
   </define>
@@ -330,21 +294,6 @@
           <value>1</value>
         </choice>
       </attribute>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="sum"/>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="key"/>
-    </optional>
-  </define>
-  <define name="attlist.field" combine="interleave">
-    <optional>
-      <attribute name="color"/>
     </optional>
   </define>
   <define name="attlist.field" combine="interleave">
@@ -416,7 +365,7 @@
   </define>
   <define name="attlist.field" combine="interleave">
     <optional>
-      <attribute name="expand_toolbar" a:defaultValue="0">
+      <attribute name="toolbar" a:defaultValue="1">
         <choice>
           <value>0</value>
           <value>1</value>
@@ -611,6 +560,16 @@
   <define name="attlist.button" combine="interleave">
     <optional>
       <attribute name="states"/>
+    </optional>
+  </define>
+  <define name="attlist.button" combine="interleave">
+    <optional>
+      <attribute name="rule" a:defaultValue="0">
+        <choice>
+          <value>0</value>
+          <value>1</value>
+        </choice>
+      </attribute>
     </optional>
   </define>
   <define name="attlist.button" combine="interleave">

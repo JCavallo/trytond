@@ -1,6 +1,6 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
-from trytond.backend.database import DatabaseInterface, CursorInterface
+from trytond.backend.database import DatabaseInterface, SQLType
 from trytond.config import config
 import os
 from decimal import Decimal
@@ -8,6 +8,7 @@ import datetime
 import time
 import sys
 import threading
+import logging
 
 _FIX_ROWCOUNT = False
 try:
@@ -20,12 +21,12 @@ except ImportError:
     import sqlite3 as sqlite
     from sqlite3 import IntegrityError as DatabaseIntegrityError
     from sqlite3 import OperationalError as DatabaseOperationalError
-from sql import Flavor, Table
+from sql import Flavor, Table, Query, Expression
 from sql.functions import (Function, Extract, Position, Substring,
-    Overlay, CharLength, CurrentTimestamp)
+    Overlay, CharLength, CurrentTimestamp, Trim)
 
-__all__ = ['Database', 'DatabaseIntegrityError', 'DatabaseOperationalError',
-    'Cursor']
+__all__ = ['Database', 'DatabaseIntegrityError', 'DatabaseOperationalError']
+logger = logging.getLogger(__name__)
 
 
 class SQLiteExtract(Function):
@@ -143,6 +144,27 @@ class SQLiteCurrentTimestamp(Function):
     _function = 'NOW'  # More precise
 
 
+class SQLiteTrim(Trim):
+
+    def __str__(self):
+        flavor = Flavor.get()
+        param = flavor.param
+
+        function = {
+            'BOTH': 'TRIM',
+            'LEADING': 'LTRIM',
+            'TRAILING': 'RTRIM',
+            }[self.position]
+
+        def format(arg):
+            if isinstance(arg, basestring):
+                return param
+            else:
+                return str(arg)
+        return function + '(%s, %s)' % (
+            format(self.string), format(self.characters))
+
+
 def sign(value):
     if value > 0:
         return 1
@@ -152,6 +174,22 @@ def sign(value):
         return value
 
 
+def greatest(*args):
+    args = filter(lambda a: a is not None, args)
+    if args:
+        return max(args)
+    else:
+        return None
+
+
+def least(*args):
+    args = filter(lambda a: a is not None, args)
+    if args:
+        return min(args)
+    else:
+        return None
+
+
 MAPPING = {
     Extract: SQLiteExtract,
     Position: SQLitePosition,
@@ -159,38 +197,62 @@ MAPPING = {
     Overlay: SQLiteOverlay,
     CharLength: SQLiteCharLength,
     CurrentTimestamp: SQLiteCurrentTimestamp,
+    Trim: SQLiteTrim,
     }
+
+
+class SQLiteCursor(sqlite.Cursor):
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        pass
+
+
+class SQLiteConnection(sqlite.Connection):
+
+    def cursor(self):
+        return super(SQLiteConnection, self).cursor(SQLiteCursor)
 
 
 class Database(DatabaseInterface):
 
     _local = threading.local()
     _conn = None
-    flavor = Flavor(paramstyle='qmark', function_mapping=MAPPING)
+    flavor = Flavor(
+        paramstyle='qmark', function_mapping=MAPPING, null_ordering=False)
+    IN_MAX = 200
 
-    def __new__(cls, database_name=':memory:'):
-        if (database_name == ':memory:'
+    TYPES_MAPPING = {
+        'DATETIME': SQLType('TIMESTAMP', 'TIMESTAMP'),
+        'BIGINT': SQLType('INTEGER', 'INTEGER'),
+        }
+
+    def __new__(cls, name=':memory:'):
+        if (name == ':memory:'
                 and getattr(cls._local, 'memory_database', None)):
             return cls._local.memory_database
-        return DatabaseInterface.__new__(cls, database_name=database_name)
+        return DatabaseInterface.__new__(cls, name=name)
 
-    def __init__(self, database_name=':memory:'):
-        super(Database, self).__init__(database_name=database_name)
-        if database_name == ':memory:':
+    def __init__(self, name=':memory:'):
+        super(Database, self).__init__(name=name)
+        if name == ':memory:':
             Database._local.memory_database = self
 
     def connect(self):
-        if self.database_name == ':memory:':
+        if self.name == ':memory:':
             path = ':memory:'
         else:
-            db_filename = self.database_name + '.sqlite'
+            db_filename = self.name + '.sqlite'
             path = os.path.join(config.get('database', 'path'), db_filename)
             if not os.path.isfile(path):
                 raise IOError('Database "%s" doesn\'t exist!' % db_filename)
         if self._conn is not None:
             return self
         self._conn = sqlite.connect(path,
-            detect_types=sqlite.PARSE_DECLTYPES | sqlite.PARSE_COLNAMES)
+            detect_types=sqlite.PARSE_DECLTYPES | sqlite.PARSE_COLNAMES,
+            factory=SQLiteConnection)
         self._conn.create_function('extract', 2, SQLiteExtract.extract)
         self._conn.create_function('date_trunc', 2, date_trunc)
         self._conn.create_function('split_part', 3, split_part)
@@ -201,29 +263,35 @@ class Database(DatabaseInterface):
             self._conn.create_function('replace', 3, replace)
         self._conn.create_function('now', 0, now)
         self._conn.create_function('sign', 1, sign)
-        self._conn.create_function('greatest', -1, max)
-        self._conn.create_function('least', -1, min)
+        self._conn.create_function('greatest', -1, greatest)
+        self._conn.create_function('least', -1, least)
+        if (hasattr(self._conn, 'set_trace_callback')
+                and logger.isEnabledFor(logging.DEBUG)):
+            self._conn.set_trace_callback(logger.debug)
         self._conn.execute('PRAGMA foreign_keys = ON')
         return self
 
-    def cursor(self, autocommit=False, readonly=False):
+    def get_connection(self, autocommit=False, readonly=False):
         if self._conn is None:
             self.connect()
         if autocommit:
             self._conn.isolation_level = None
         else:
             self._conn.isolation_level = 'IMMEDIATE'
-        return Cursor(self._conn, self.database_name)
+        return self._conn
+
+    def put_connection(self, connection=None, close=False):
+        pass
 
     def close(self):
-        if self.database_name == ':memory:':
+        if self.name == ':memory:':
             return
         if self._conn is None:
             return
         self._conn = None
 
-    @staticmethod
-    def create(cursor, database_name):
+    @classmethod
+    def create(cls, connection, database_name):
         if database_name == ':memory:':
             path = ':memory:'
         else:
@@ -235,43 +303,16 @@ class Database(DatabaseInterface):
             cursor = conn.cursor()
             cursor.close()
 
-    @classmethod
-    def drop(cls, cursor, database_name):
+    def drop(self, connection, database_name):
         if database_name == ':memory:':
-            cls._local.memory_database._conn = None
+            self._local.memory_database._conn = None
             return
         if os.sep in database_name:
             return
         os.remove(os.path.join(config.get('database', 'path'),
             database_name + '.sqlite'))
 
-    @staticmethod
-    def dump(database_name):
-        if database_name == ':memory:':
-            raise Exception('Unable to dump memory database!')
-        if os.sep in database_name:
-            raise Exception('Wrong database name!')
-        path = os.path.join(config.get('database', 'path'),
-                database_name + '.sqlite')
-        with open(path, 'rb') as file_p:
-            data = file_p.read()
-        return data
-
-    @staticmethod
-    def restore(database_name, data):
-        if database_name == ':memory:':
-            raise Exception('Unable to restore memory database!')
-        if os.sep in database_name:
-            raise Exception('Wrong database name!')
-        path = os.path.join(config.get('database', 'path'),
-                database_name + '.sqlite')
-        if os.path.isfile(path):
-            raise Exception('Database already exists!')
-        with open(path, 'wb') as file_p:
-            file_p.write(data)
-
-    @staticmethod
-    def list(cursor):
+    def list(self):
         res = []
         listdir = [':memory:']
         try:
@@ -285,80 +326,48 @@ class Database(DatabaseInterface):
                 else:
                     db_name = db_file[:-7]
                 try:
-                    database = Database(db_name)
+                    database = Database(db_name).connect()
                 except Exception:
                     continue
-                cursor2 = database.cursor()
-                if cursor2.test():
+                if database.test():
                     res.append(db_name)
-                cursor2.close()
+                database.close()
         return res
 
-    @staticmethod
-    def init(cursor):
+    def init(self):
         from trytond.modules import get_module_info
-        sql_file = os.path.join(os.path.dirname(__file__), 'init.sql')
-        with open(sql_file) as fp:
-            for line in fp.read().split(';'):
-                if (len(line) > 0) and (not line.isspace()):
-                    cursor.execute(line)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            sql_file = os.path.join(os.path.dirname(__file__), 'init.sql')
+            with open(sql_file) as fp:
+                for line in fp.read().split(';'):
+                    if (len(line) > 0) and (not line.isspace()):
+                        cursor.execute(line)
 
-        ir_module = Table('ir_module')
-        ir_module_dependency = Table('ir_module_dependency')
-        for module in ('ir', 'res', 'webdav'):
-            state = 'uninstalled'
-            if module in ('ir', 'res'):
-                state = 'to install'
-            info = get_module_info(module)
-            insert = ir_module.insert(
-                [ir_module.create_uid, ir_module.create_date, ir_module.name,
-                    ir_module.state],
-                [[0, CurrentTimestamp(), module, state]])
-            cursor.execute(*insert)
-            cursor.execute('SELECT last_insert_rowid()')
-            module_id, = cursor.fetchone()
-            for dependency in info.get('depends', []):
-                insert = ir_module_dependency.insert(
-                    [ir_module_dependency.create_uid,
-                        ir_module_dependency.create_date,
-                        ir_module_dependency.module, ir_module_dependency.name
-                        ],
-                    [[0, CurrentTimestamp(), module_id, dependency]])
+            ir_module = Table('ir_module')
+            ir_module_dependency = Table('ir_module_dependency')
+            for module in ('ir', 'res'):
+                state = 'not activated'
+                if module in ('ir', 'res'):
+                    state = 'to activate'
+                info = get_module_info(module)
+                insert = ir_module.insert(
+                    [ir_module.create_uid, ir_module.create_date,
+                        ir_module.name, ir_module.state],
+                    [[0, CurrentTimestamp(), module, state]])
                 cursor.execute(*insert)
-
-
-class Cursor(CursorInterface):
-    IN_MAX = 200
-
-    def __init__(self, conn, database_name):
-        super(Cursor, self).__init__()
-        self._conn = conn
-        self.database_name = database_name
-        self.dbname = self.database_name  # XXX to remove
-        self.cursor = conn.cursor()
-
-    def __getattr__(self, name):
-        if _FIX_ROWCOUNT and name == 'rowcount':
-            return -1
-        return getattr(self.cursor, name)
-
-    def execute(self, sql, params=None):
-        if params:
-            return self.cursor.execute(sql, params)
-        else:
-            return self.cursor.execute(sql)
-
-    def close(self, close=False):
-        self.cursor.close()
-        self.rollback()
-
-    def commit(self):
-        super(Cursor, self).commit()
-        self._conn.commit()
-
-    def rollback(self):
-        super(Cursor, self).rollback()
-        self._conn.rollback()
+                cursor.execute('SELECT last_insert_rowid()')
+                module_id, = cursor.fetchone()
+                for dependency in info.get('depends', []):
+                    insert = ir_module_dependency.insert(
+                        [ir_module_dependency.create_uid,
+                            ir_module_dependency.create_date,
+                            ir_module_dependency.module,
+                            ir_module_dependency.name,
+                            ],
+                        [[0, CurrentTimestamp(), module_id, dependency]])
+                    cursor.execute(*insert)
+            conn.commit()
 
     def test(self):
         sqlite_master = Table('sqlite_master')
@@ -376,17 +385,19 @@ class Cursor(CursorInterface):
                 'ir_translation',
                 'ir_lang',
                 ])
-        try:
-            self.cursor.execute(*select)
-        except Exception:
-            return False
-        return len(self.cursor.fetchall()) != 0
+        with self._conn as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(*select)
+            except Exception:
+                return False
+            return len(cursor.fetchall()) != 0
 
-    def lastid(self):
-        self.cursor.execute('SELECT last_insert_rowid()')
-        return self.cursor.fetchone()[0]
+    def lastid(self, cursor):
+        # This call is not thread safe
+        return cursor.lastrowid
 
-    def lock(self, table):
+    def lock(self, connection, table):
         pass
 
     def has_constraint(self):
@@ -394,6 +405,20 @@ class Cursor(CursorInterface):
 
     def has_multirow_insert(self):
         return True
+
+    def sql_type(self, type_):
+        if type_ in self.TYPES_MAPPING:
+            return self.TYPES_MAPPING[type_]
+        if type_.startswith('VARCHAR'):
+            return SQLType('VARCHAR', 'VARCHAR')
+        return SQLType(type_, type_)
+
+    def sql_format(self, type_, value):
+        if type_ in ('INTEGER', 'BIGINT'):
+            if (value is not None
+                    and not isinstance(value, (Query, Expression))):
+                value = int(value)
+        return value
 
 sqlite.register_converter('NUMERIC', lambda val: Decimal(val.decode('utf-8')))
 if sys.version_info[0] == 2:

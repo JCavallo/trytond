@@ -22,11 +22,9 @@ Keyword
 
 Keywords define where to display the action in the client.
 
-There are six places:
+There are five places:
 
     * Open tree (`tree_open`)
-
-    * Action tree (`tree_action`)
 
     * Print form (`form_print`)
 
@@ -55,7 +53,12 @@ Domain
 ------
 
 The window action could have a list of domains which could be activated on the
-view.
+view. The boolean field count indicates if the client must display the number
+of records for this domain.
+
+.. warning::
+    The counting option must be activated only on domains which have not too
+    much records otherwise it may overload the database.
 
 Wizard
 ======

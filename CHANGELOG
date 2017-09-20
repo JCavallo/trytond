@@ -1,13 +1,114 @@
+Version 4.4.3 - 2017-08-08
+* Bug fixes (see mercurial logs for details)
+
+Version 4.4.2 - 2017-07-01
+* Bug fixes (see mercurial logs for details)
+
+Version 4.4.1 - 2017-05-19
+* Bug fixes (see mercurial logs for details)
+
+Version 4.4.0 - 2017-05-01
+* Bug fixes (see mercurial logs for details)
+* Sanitize path in file_open against suffix (CVE-2017-0360)
+* Add constraint on user password
+* Remove Property field
+* Add MultiValueMixin and ValueMixin
+* Use sql type in column creation
+* Use generic SQL type in field and let backend determine the SQLType
+* Add filter to xxx2Many fields
+* Add NULLS ordering
+* Add context domain on ir.action.act_window
+* Allow None limit in action window
+* Add has_window_functions on Database
+* Allow Many2One on ModelSQL to target ModelStorage
+* Manage Cache in Transaction
+* Allow to register multiple exit functions on Transaction
+* Return 429 status when too many login attempts
+* Add set_rpc on Field
+* Add has_select_for on Database
+* Store custom report translation in separate module
+* Add form action keyword for set/synchronize translation on report and view
+* Add negative value for col attribute
+* Allow to use domain_<field name> method with Function fields
+* Validate wizard definition on module tests
+* Remove order constraint on register ModelSQL
+* Add relate from report to translations
+
+Version 4.2.0 - 2016-11-28
+* Bug fixes (see mercurial logs for details)
+* Add toolbar attribute for richtext widget
+* Add PYSON widget
+* Allow to define the text color and background color in calendar view
+* Allow to override cache implementation
+* Add button rule
+* Allow to specify translatable languages in trytond-admin
+* Add datetime_field on Reference
+* Merge Spanish's into Spanish (Latin American)
+* Do not check write access on model for wizard with groups
+* Add user application
+* Add sequence_ordered
+* Remove most country specific code in languages
+* Add support for derivative translations
+* Remove IDENTIFIER regexp on ir.model and ir.model.field
+* Enforce suffix and prefix to have id or name
+* Sanitize path in file_open (CVE-2016-1242)
+* Prevent read of user password hash (CVE-2016-1241)
+* Add database dump cache for tests
+* Remove unused tools: find_in_path, exec_command_pipe and mod10r
+* Implementation of drop_column for SQLite
+* Allow to pass many configuration files
+* Remove translate on field name of User
+* Allow to define the default mode in calendar view
+* Use 'default_rec_name' context key in Model.default_get
+* Add option to store Attachment in database
+* Allow to store Binary field in filestore
+* Add filestore module
+* Allow None in Greater/Less PYSON
+* Add option to set admin password with trytond-admin
+* Remove super password
+* Remove database management from RPC
+* Remove ModelView.view_header_get
+* Remove string attribute from views
+* Don't check write access on model for button with groups
+* Limit readonly state for xxx2Many
+* Add option to update modules list with trytond-admin
+* Use home directory as default path for database and web root.
+* Add count option on Action Window Domains
+* Remove window_name on Action Window
+* Return the calling keyword in ActionKeyword.get_keywords
+* Add customizable login process
+* Allow to customize the substitutions used on sequence
+* Allow PYSON in tree_invisible attribute
+
+Version 4.0.0 - 2016-05-02
+* Bug fixes (see mercurial logs for details)
+* Add sendmail module to send transactional email
+* Support Two-Phase Commit in Transaction
+* Allow Report to generate text plain, XML, HTML and XHTML
+* Add workflow graph on ir.model
+* Add context model on ir.action.act_window
+* Switch to WSGI API
+* Limit the login size in LoginAttempt
+* Remove LocalDict from tools
+* Add LRUDictTransaction
+* Follow PEP-0249 for Database, Transaction and Cursor
+* Add Python3 support
+* Make TestCase create and drop its database
+* Add with_transaction decorator for tests
+* Add note on resources
+* Add 'where' operator for xxx2many fields
 * Strip and unquote double-quote from Postgresql schema in search_path
+* Move webdav into a separate module
 * Don't read historized user when evaluating record rules as it could lead to
   past privilege escalation.
-
-Version 3.8.2 - 2016-01-11
-* Bug fixes (see mercurial logs for details)
-
-Version 3.8.1 - 2015-12-16
-* Bug fixes (see mercurial logs for details)
+* Only rebuild mptt tree if left or right values have their default values
+* Allow nested inherited view
+* Add button on cron to run once
 * Check all fields when writing a sequence of records, values (CVE-2015-0861)
+* Add view_ids on tree view
+* Add parent_of operator
+* Enforce type of inheriting view
+* Use instance context in translated descriptor of Selection
 
 Version 3.8.0 - 2015-11-02
 * Bug fixes (see mercurial logs for details)

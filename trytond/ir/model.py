@@ -2,27 +2,26 @@
 # this repository contains the full copyright notices and license terms.
 import re
 import heapq
+import json
 
 from sql import Null
 from sql.aggregate import Max
 from sql.conditionals import Case
 from collections import defaultdict
-try:
-    import simplejson as json
-except ImportError:
-    import json
+from itertools import groupby
 
-from ..model import ModelView, ModelSQL, fields, Unique
+from ..model import (ModelView, ModelSQL, Workflow, fields, Unique,
+    EvalEnvironment)
 from ..report import Report
 from ..wizard import Wizard, StateView, StateAction, Button
 from ..transaction import Transaction
 from ..cache import Cache
 from ..pool import Pool
-from ..pyson import Bool, Eval
+from ..pyson import Bool, Eval, PYSONDecoder
 from ..rpc import RPC
 from .. import backend
 from ..protocols.jsonrpc import JSONDecoder, JSONEncoder
-from ..tools import is_instance_method
+from ..tools import is_instance_method, cursor_dict, grouped_slice
 try:
     from ..tools.StringMatcher import StringMatcher
 except ImportError:
@@ -30,10 +29,10 @@ except ImportError:
 
 __all__ = [
     'Model', 'ModelField', 'ModelAccess', 'ModelFieldAccess', 'ModelButton',
+    'ModelButtonRule', 'ModelButtonClick', 'ModelButtonReset',
     'ModelData', 'PrintModelGraphStart', 'PrintModelGraph', 'ModelGraph',
+    'ModelWorkflowGraph',
     ]
-
-IDENTIFIER = re.compile(r'^[a-zA-z_][a-zA-Z0-9_]*$')
 
 
 class Model(ModelSQL, ModelView):
@@ -69,10 +68,6 @@ class Model(ModelSQL, ModelView):
             ('model_uniq', Unique(table, table.model),
                 'The model must be unique!'),
             ]
-        cls._error_messages.update({
-                'invalid_module': ('Module name "%s" is not a valid python '
-                    'identifier.'),
-                })
         cls._order.insert(0, ('model', 'ASC'))
         cls.__rpc__.update({
                 'list_models': RPC(),
@@ -82,9 +77,7 @@ class Model(ModelSQL, ModelView):
 
     @classmethod
     def register(cls, model, module_name):
-        pool = Pool()
-        Property = pool.get('ir.property')
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
 
         ir_model = cls.__table__()
         cursor.execute(*ir_model.select(ir_model.id,
@@ -102,7 +95,6 @@ class Model(ModelSQL, ModelView):
                         ir_model.module],
                     [[model.__name__, model._get_name(), model.__doc__,
                             module_name]]))
-            Property._models_get_cache.clear()
             cursor.execute(*ir_model.select(ir_model.id,
                     where=ir_model.model == model.__name__))
             (model_id,) = cursor.fetchone()
@@ -112,20 +104,6 @@ class Model(ModelSQL, ModelView):
                     [model._get_name(), model.__doc__],
                     where=ir_model.id == model_id))
         return model_id
-
-    @classmethod
-    def validate(cls, models):
-        super(Model, cls).validate(models)
-        cls.check_module(models)
-
-    @classmethod
-    def check_module(cls, models):
-        '''
-        Check module
-        '''
-        for model in models:
-            if model.module and not IDENTIFIER.match(model.module):
-                cls.raise_user_error('invalid_module', (model.rec_name,))
 
     @classmethod
     def list_models(cls):
@@ -142,31 +120,6 @@ class Model(ModelSQL, ModelView):
         'Return a list of all models with history'
         return [name for name, model in Pool().iterobject()
             if getattr(model, '_history', False)]
-
-    @classmethod
-    def create(cls, vlist):
-        pool = Pool()
-        Property = pool.get('ir.property')
-        res = super(Model, cls).create(vlist)
-        # Restart the cache of models_get
-        Property._models_get_cache.clear()
-        return res
-
-    @classmethod
-    def write(cls, models, values, *args):
-        pool = Pool()
-        Property = pool.get('ir.property')
-        super(Model, cls).write(models, values, *args)
-        # Restart the cache of models_get
-        Property._models_get_cache.clear()
-
-    @classmethod
-    def delete(cls, models):
-        pool = Pool()
-        Property = pool.get('ir.property')
-        super(Model, cls).delete(models)
-        # Restart the cache of models_get
-        Property._models_get_cache.clear()
 
     @classmethod
     def global_search(cls, text, limit, menu='ir.ui.menu'):
@@ -187,7 +140,7 @@ class Model(ModelSQL, ModelView):
                 ])
         access = ModelAccess.get_access([m.model for m in models])
         s = StringMatcher()
-        if isinstance(text, str):
+        if isinstance(text, bytes):
             text = text.decode('utf-8')
         s.set_seq2(text)
 
@@ -199,7 +152,7 @@ class Model(ModelSQL, ModelView):
                 if not hasattr(Model, 'search_global'):
                     continue
                 for record, name, icon in Model.search_global(text):
-                    if isinstance(name, str):
+                    if isinstance(name, bytes):
                         name = name.decode('utf-8')
                     s.set_seq1(name)
                     yield (s.ratio(), model.model, model.rec_name,
@@ -255,17 +208,13 @@ class ModelField(ModelSQL, ModelView):
             ('name_model_uniq', Unique(table, table.name, table.model),
                 'The field name in model must be unique!'),
             ]
-        cls._error_messages.update({
-                'invalid_name': ('Model Field name "%s" is not a valid python '
-                    'identifier.'),
-                })
         cls._order.insert(0, ('name', 'ASC'))
 
     @classmethod
     def register(cls, model, module_name, model_id):
         pool = Pool()
         Model = pool.get('ir.model')
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
 
         ir_model_field = cls.__table__()
         ir_model = Model.__table__()
@@ -280,7 +229,7 @@ class ModelField(ModelSQL, ModelView):
                 ir_model_field.module.as_('module'),
                 ir_model_field.help.as_('help'),
                 where=ir_model.model == model.__name__))
-        model_fields = dict((f['name'], f) for f in cursor.dictfetchall())
+        model_fields = {f['name']: f for f in cursor_dict(cursor)}
 
         for field_name, field in model._fields.iteritems():
             if hasattr(field, 'model_name'):
@@ -329,20 +278,6 @@ class ModelField(ModelSQL, ModelView):
         return 'No description available'
 
     @classmethod
-    def validate(cls, fields):
-        super(ModelField, cls).validate(fields)
-        cls.check_name(fields)
-
-    @classmethod
-    def check_name(cls, fields):
-        '''
-        Check name
-        '''
-        for field in fields:
-            if not IDENTIFIER.match(field.name):
-                cls.raise_user_error('invalid_name', (field.name,))
-
-    @classmethod
     def read(cls, ids, fields_names=None):
         pool = Pool()
         Translation = pool.get('ir.translation')
@@ -374,7 +309,7 @@ class ModelField(ModelSQL, ModelView):
                 else:
                     model_ids.add(rec['model'])
             model_ids = list(model_ids)
-            cursor = Transaction().cursor
+            cursor = Transaction().connection.cursor()
             model = Model.__table__()
             cursor.execute(*model.select(model.id, model.model,
                     where=model.id.in_(model_ids)))
@@ -421,7 +356,6 @@ class ModelField(ModelSQL, ModelView):
 class ModelAccess(ModelSQL, ModelView):
     "Model access"
     __name__ = 'ir.model.access'
-    _rec_name = 'model'
     model = fields.Many2One('ir.model', 'Model', required=True,
             ondelete="CASCADE")
     group = fields.Many2One('res.group', 'Group',
@@ -449,11 +383,10 @@ class ModelAccess(ModelSQL, ModelView):
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
 
         super(ModelAccess, cls).__register__(module_name)
 
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.6 (model, group) no more unique
         table.drop_constraint('model_group_uniq')
@@ -478,6 +411,13 @@ class ModelAccess(ModelSQL, ModelView):
     def default_perm_delete():
         return False
 
+    def get_rec_name(self, name):
+        return self.model.rec_name
+
+    @classmethod
+    def search_rec_name(cls, name, clause):
+        return [('model',) + tuple(clause[1:])]
+
     @classmethod
     def get_access(cls, models):
         'Return access for models'
@@ -488,7 +428,7 @@ class ModelAccess(ModelSQL, ModelView):
         pool = Pool()
         Model = pool.get('ir.model')
         UserGroup = pool.get('res.user-res.group')
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         user = Transaction().user
         model_access = cls.__table__()
         ir_model = Model.__table__()
@@ -606,7 +546,6 @@ class ModelAccess(ModelSQL, ModelView):
 class ModelFieldAccess(ModelSQL, ModelView):
     "Model Field Access"
     __name__ = 'ir.model.field.access'
-    _rec_name = 'field'
     field = fields.Many2One('ir.model.field', 'Field', required=True,
             ondelete='CASCADE')
     group = fields.Many2One('res.group', 'Group', ondelete='CASCADE')
@@ -628,11 +567,10 @@ class ModelFieldAccess(ModelSQL, ModelView):
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
 
         super(ModelFieldAccess, cls).__register__(module_name)
 
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.6 (field, group) no more unique
         table.drop_constraint('field_group_uniq')
@@ -657,6 +595,13 @@ class ModelFieldAccess(ModelSQL, ModelView):
     def default_perm_delete():
         return True
 
+    def get_rec_name(self, name):
+        return self.field.rec_name
+
+    @classmethod
+    def search_rec_name(cls, name, clause):
+        return [('field',) + tuple(clause[1:])]
+
     @classmethod
     def get_access(cls, models):
         'Return fields access for models'
@@ -669,7 +614,6 @@ class ModelFieldAccess(ModelSQL, ModelView):
         Model = pool.get('ir.model')
         ModelField = pool.get('ir.model.field')
         UserGroup = pool.get('res.user-res.group')
-        cursor = Transaction().cursor
         user = Transaction().user
         field_access = cls.__table__()
         ir_model = Model.__table__()
@@ -687,6 +631,7 @@ class ModelFieldAccess(ModelSQL, ModelView):
 
         default = {}
         accesses = dict((m, default) for m in models)
+        cursor = Transaction().connection.cursor()
         cursor.execute(*field_access.join(model_field,
                 condition=field_access.field == model_field.id
                 ).join(ir_model,
@@ -768,6 +713,25 @@ class ModelButton(ModelSQL, ModelView):
     groups = fields.Many2Many('ir.model.button-res.group', 'button', 'group',
         'Groups')
     _groups_cache = Cache('ir.model.button.groups')
+    rules = fields.One2Many('ir.model.button.rule', 'button', "Rules")
+    _rules_cache = Cache('ir.model.button.rules')
+    clicks = fields.One2Many('ir.model.button.click', 'button', "Clicks")
+    reset_by = fields.Many2Many(
+        'ir.model.button-button.reset', 'button_ruled', 'button', "Reset by",
+        domain=[
+            ('model', '=', Eval('model', -1)),
+            ('id', '!=', Eval('id', -1)),
+            ],
+        depends=['model', 'id'],
+        help="Button that should reset the rules")
+    reset = fields.Many2Many(
+        'ir.model.button-button.reset', 'button', 'button_ruled', "Reset",
+        domain=[
+            ('model', '=', Eval('model', -1)),
+            ('id', '!=', Eval('id', -1)),
+            ],
+        depends=['model', 'id'])
+    _reset_cache = Cache('ir.model.button.reset')
 
     @classmethod
     def __setup__(cls):
@@ -782,21 +746,36 @@ class ModelButton(ModelSQL, ModelView):
     @classmethod
     def create(cls, vlist):
         result = super(ModelButton, cls).create(vlist)
-        # Restart the cache for get_groups
+        # Restart the cache for get_groups and get_rules
         cls._groups_cache.clear()
+        cls._rules_cache.clear()
+        cls._reset_cache.clear()
         return result
 
     @classmethod
     def write(cls, buttons, values, *args):
         super(ModelButton, cls).write(buttons, values, *args)
-        # Restart the cache for get_groups
+        # Restart the cache for get_groups and get_rules
         cls._groups_cache.clear()
+        cls._rules_cache.clear()
+        cls._reset_cache.clear()
 
     @classmethod
     def delete(cls, buttons):
         super(ModelButton, cls).delete(buttons)
-        # Restart the cache for get_groups
+        # Restart the cache for get_groups and get_rules
         cls._groups_cache.clear()
+        cls._rules_cache.clear()
+        cls._reset_cache.clear()
+
+    @classmethod
+    def copy(cls, buttons, default=None):
+        if default is None:
+            default = {}
+        else:
+            default = default.copy()
+        default.setdefault('clicks')
+        return super(ModelButton, cls).copy(buttons, default=default)
 
     @classmethod
     def get_groups(cls, model, name):
@@ -818,6 +797,211 @@ class ModelButton(ModelSQL, ModelView):
             groups = set(g.id for g in button.groups)
         cls._groups_cache.set(key, groups)
         return groups
+
+    @classmethod
+    def get_rules(cls, model, name):
+        'Return a list of rules to apply on the named button of the model'
+        pool = Pool()
+        Rule = pool.get('ir.model.button.rule')
+        key = (model, name)
+        rule_ids = cls._rules_cache.get(key)
+        if rule_ids is not None:
+            return Rule.browse(rule_ids)
+        buttons = cls.search([
+                ('model.model', '=', model),
+                ('name', '=', name),
+                ])
+        if not buttons:
+            rules = []
+        else:
+            button, = buttons
+            rules = button.rules
+        cls._rules_cache.set(key, [r.id for r in rules])
+        return rules
+
+    @classmethod
+    def get_reset(cls, model, name):
+        "Return a list of button names to reset"
+        key = (model, name)
+        reset = cls._reset_cache.get(key)
+        if reset is not None:
+            return reset
+        buttons = cls.search([
+                ('model.model', '=', model),
+                ('name', '=', name),
+                ])
+        if not buttons:
+            reset = []
+        else:
+            button, = buttons
+            reset = [b.name for b in button.reset]
+        cls._reset_cache.set(key, reset)
+        return reset
+
+
+class ModelButtonRule(ModelSQL, ModelView):
+    "Model Button Rule"
+    __name__ = 'ir.model.button.rule'
+    button = fields.Many2One(
+        'ir.model.button', "Button", required=True, ondelete='CASCADE')
+    description = fields.Char('Description')
+    number_user = fields.Integer('Number of User', required=True)
+    condition = fields.Char(
+        "Condition",
+        help='A PYSON statement evaluated with the record represented by '
+        '"self"\nIt activate the rule if true.')
+
+    @classmethod
+    def __setup__(cls):
+        super(ModelButtonRule, cls).__setup__()
+        cls._error_messages.update({
+                'invalid_condition': ('Condition "%(condition)s" is not a '
+                    'valid PYSON expression on button rule "%(rule)s".'),
+                })
+
+    @classmethod
+    def default_number_user(cls):
+        return 1
+
+    @classmethod
+    def validate(cls, rules):
+        super(ModelButtonRule, cls).validate(rules)
+        cls.check_condition(rules)
+
+    @classmethod
+    def check_condition(cls, rules):
+        for rule in rules:
+            if not rule.condition:
+                continue
+            try:
+                PYSONDecoder(noeval=True).decode(rule.condition)
+            except Exception:
+                cls.raise_user_error('invalid_condition', {
+                        'condition': rule.condition,
+                        'rule': rule.rec_name,
+                        })
+
+    def test(self, record, clicks):
+        "Test if the rule passes for the record"
+        if self.condition:
+            env = {}
+            env['self'] = EvalEnvironment(record, record.__class__)
+            if not PYSONDecoder(env).decode(self.condition):
+                return True
+        if self.group:
+            users = {c.user for c in clicks if self.group in c.user.groups}
+        else:
+            users = {c.user for c in clicks}
+        return len(users) >= self.number_user
+
+    @classmethod
+    def create(cls, vlist):
+        pool = Pool()
+        ModelButton = pool.get('ir.model.button')
+        result = super(ModelButtonRule, cls).create(vlist)
+        # Restart the cache for get_rules
+        ModelButton._rules_cache.clear()
+        return result
+
+    @classmethod
+    def write(cls, buttons, values, *args):
+        pool = Pool()
+        ModelButton = pool.get('ir.model.button')
+        super(ModelButtonRule, cls).write(buttons, values, *args)
+        # Restart the cache for get_rules
+        ModelButton._rules_cache.clear()
+
+    @classmethod
+    def delete(cls, buttons):
+        pool = Pool()
+        ModelButton = pool.get('ir.model.button')
+        super(ModelButtonRule, cls).delete(buttons)
+        # Restart the cache for get_rules
+        ModelButton._rules_cache.clear()
+
+
+class ModelButtonClick(ModelSQL, ModelView):
+    "Model Button Click"
+    __name__ = 'ir.model.button.click'
+    button = fields.Many2One(
+        'ir.model.button', "Button", required=True, ondelete='CASCADE')
+    record_id = fields.Integer("Record ID", required=True)
+    active = fields.Boolean("Active")
+
+    @classmethod
+    def __setup__(cls):
+        super(ModelButtonClick, cls).__setup__()
+        cls.__rpc__.update({
+                'get_click': RPC(),
+                })
+
+    @classmethod
+    def default_active(cls):
+        return True
+
+    @classmethod
+    def register(cls, model, name, records):
+        pool = Pool()
+        Button = pool.get('ir.model.button')
+
+        assert all(r.__class__.__name__ == model for r in records)
+
+        user = Transaction().user
+        button, = Button.search([
+                ('model.model', '=', model),
+                ('name', '=', name),
+                ])
+        cls.create([{
+                    'button': button.id,
+                    'record_id': r.id,
+                    'user': user,
+                    } for r in records])
+
+        clicks = defaultdict(list)
+        for records in grouped_slice(records):
+            records = cls.search([
+                    ('button', '=', button.id),
+                    ('record_id', 'in', [r.id for r in records]),
+                    ], order=[('record_id', 'ASC')])
+            clicks.update(
+                (k, list(v)) for k, v in groupby(
+                    records, key=lambda c: c.record_id))
+        return clicks
+
+    @classmethod
+    def reset(cls, model, names, records):
+        assert all(r.__class__.__name__ == model for r in records)
+
+        clicks = []
+        for records in grouped_slice(records):
+            clicks.extend(cls.search([
+                        ('button.model.model', '=', model),
+                        ('button.name', 'in', names),
+                        ('record_id', 'in', [r.id for r in records]),
+                        ]))
+        cls.write(clicks, {
+                'active': False,
+                })
+
+    @classmethod
+    def get_click(cls, model, button, record_id):
+        clicks = cls.search([
+                ('button.model.model', '=', model),
+                ('button.name', '=', button),
+                ('record_id', '=', record_id),
+                ])
+        return {c.user.id: c.user.rec_name for c in clicks}
+
+
+class ModelButtonReset(ModelSQL):
+    "Model Button Reset"
+    __name__ = 'ir.model.button-button.reset'
+    button_ruled = fields.Many2One(
+        'ir.model.button', "Button Ruled",
+        required=True, ondelete='CASCADE', select=True)
+    button = fields.Many2One(
+        'ir.model.button', "Button",
+        required=True, ondelete='CASCADE', select=True)
 
 
 class ModelData(ModelSQL, ModelView):
@@ -856,12 +1040,12 @@ class ModelData(ModelSQL, ModelView):
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         model_data = cls.__table__()
 
         super(ModelData, cls).__register__(module_name)
 
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.6: remove inherit
         if table.column_exist('inherit'):
@@ -907,7 +1091,7 @@ class ModelData(ModelSQL, ModelView):
             ('fs_id', '=', fs_id),
             ], limit=1)
         if not data:
-            raise Exception("Reference to %s not found"
+            raise KeyError("Reference to %s not found"
                 % ".".join([module, fs_id]))
         id_ = cls.read([d.id for d in data], ['db_id'])[0]['db_id']
         cls._get_id_cache.set(key, id_)
@@ -915,7 +1099,8 @@ class ModelData(ModelSQL, ModelView):
 
     @classmethod
     def dump_values(cls, values):
-        return json.dumps(sorted(values.iteritems()), cls=JSONEncoder)
+        return json.dumps(
+            sorted(values.iteritems()), cls=JSONEncoder, separators=(',', ':'))
 
     @classmethod
     def load_values(cls, values):
@@ -935,6 +1120,7 @@ class ModelData(ModelSQL, ModelView):
     def sync(cls, records):
         pool = Pool()
         to_write = []
+        models_to_write = defaultdict(list)
         for data in records:
             Model = pool.get(data.model)
             values = cls.load_values(data.values)
@@ -943,11 +1129,12 @@ class ModelData(ModelSQL, ModelView):
             # if they come from version < 3.2
             if values != fs_values:
                 record = Model(data.db_id)
-                Model.write([record], fs_values)
-                values = fs_values
+                models_to_write[Model].extend(([record], fs_values))
             to_write.extend([[data], {
-                        'values': cls.dump_values(values),
+                        'values': cls.dump_values(fs_values),
                         }])
+        for Model, values_to_write in models_to_write.iteritems():
+            Model.write(*values_to_write)
         if to_write:
             cls.write(*to_write)
 
@@ -958,10 +1145,16 @@ class PrintModelGraphStart(ModelView):
     level = fields.Integer('Level', required=True)
     filter = fields.Text('Filter', help="Entering a Python "
             "Regular Expression will exclude matching models from the graph.")
+    # JCA : Add ignore function option
+    ignore_function = fields.Boolean('Ignore Function fields')
 
     @staticmethod
     def default_level():
         return 1
+
+    @staticmethod
+    def default_ignore_function():
+        return False
 
 
 class PrintModelGraph(Wizard):
@@ -983,6 +1176,7 @@ class PrintModelGraph(Wizard):
             'ids': Transaction().context.get('active_ids'),
             'level': self.start.level,
             'filter': self.start.filter,
+            'ignore_function': self.start.ignore_function,
             }
 
 
@@ -1045,12 +1239,18 @@ class ModelGraph(Report):
         for model in models:
             if filter and re.search(filter, model.model):
                     continue
+            ModelClass = pool.get(model.model)
             label = '"{' + model.model + '\\n'
             if model.fields:
                 label += '|'
             for field in model.fields:
                 if field.name in ('create_uid', 'write_uid',
                         'create_date', 'write_date', 'id'):
+                    continue
+                field_desc = ModelClass._fields[field.name]
+                # JCA : Add ignore function option
+                if (isinstance(field_desc, fields.Function)
+                        and not isinstance(field_desc, fields.Property)):
                     continue
                 label += '+ ' + field.name + ': ' + field.ttype
                 if field.relation:
@@ -1063,6 +1263,11 @@ class ModelGraph(Report):
 
             for field in model.fields:
                 if field.name in ('create_uid', 'write_uid'):
+                    continue
+                field_desc = ModelClass._fields[field.name]
+                # JCA : Add ignore function option
+                if (isinstance(field_desc, fields.Function)
+                        and not isinstance(field_desc, fields.Property)):
                     continue
                 if field.relation:
                     node_name = '"%s"' % field.relation
@@ -1097,3 +1302,58 @@ class ModelGraph(Report):
 
                     edge = pydot.Edge(str(tail), str(head), **args)
                     graph.add_edge(edge)
+
+
+class ModelWorkflowGraph(Report):
+    __name__ = 'ir.model.workflow_graph'
+
+    @classmethod
+    def execute(cls, ids, data):
+        import pydot
+        pool = Pool()
+        Model = pool.get('ir.model')
+        ActionReport = pool.get('ir.action.report')
+
+        action_report_ids = ActionReport.search([
+            ('report_name', '=', cls.__name__)
+            ])
+        if not action_report_ids:
+            raise Exception('Error', 'Report (%s) not find!' % cls.__name__)
+        action_report = ActionReport(action_report_ids[0])
+
+        models = Model.browse(ids)
+
+        graph = pydot.Dot()
+        graph.set('center', '1')
+        graph.set('ratio', 'auto')
+        direction = Transaction().context.get('language_direction', 'ltr')
+        graph.set('rankdir', {'ltr': 'LR', 'rtl': 'RL'}[direction])
+        cls.fill_graph(models, graph)
+        data = graph.create(prog='dot', format='png')
+        return ('png', fields.Binary.cast(data), False, action_report.name)
+
+    @classmethod
+    def fill_graph(cls, models, graph):
+        'Fills pydot graph with models wizard.'
+        import pydot
+        pool = Pool()
+
+        for record in models:
+            Model = pool.get(record.model)
+
+            if not issubclass(Model, Workflow):
+                continue
+
+            subgraph = pydot.Cluster('%s' % record.id, label=record.model)
+            graph.add_subgraph(subgraph)
+
+            state_field = getattr(Model, Model._transition_state)
+            for state, _ in state_field.selection:
+                node = pydot.Node(
+                    '"%s"' % state, shape='octagon', label=state)
+                subgraph.add_node(node)
+
+            for from_, to in Model._transitions:
+                edge = pydot.Edge('"%s"' % from_, '"%s"' % to,
+                    arrowhead='normal')
+                subgraph.add_edge(edge)

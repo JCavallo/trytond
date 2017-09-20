@@ -5,7 +5,6 @@ from .field import *
 from .boolean import *
 from .integer import *
 from .char import *
-from .sha import *
 from .text import *
 from .float import *
 from .numeric import *
@@ -17,6 +16,5 @@ from .many2one import *
 from .one2many import *
 from .many2many import *
 from .function import *
-from .property import *
 from .one2one import *
 from .dict import *

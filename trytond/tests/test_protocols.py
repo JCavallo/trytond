@@ -6,12 +6,22 @@ import json
 import datetime
 from decimal import Decimal
 
-from trytond.protocols.jsonrpc import JSONEncoder, JSONDecoder
-from trytond.protocols.xmlrpc import xmlrpclib
+from trytond.protocols.jsonrpc import JSONEncoder, JSONDecoder, JSONRequest
+from trytond.protocols.xmlrpc import client, XMLRequest
 
 
 class JSONTestCase(unittest.TestCase):
     'Test JSON'
+
+    def test_json_request(self):
+        req = JSONRequest.from_values(
+            data=b'{"method": "method", "params": ["foo", "bar"]}',
+            content_type='text/json',
+            )
+        self.assertEqual(req.parsed_data,
+            {'method': 'method', 'params': ['foo', 'bar']})
+        self.assertEqual(req.rpc_method, 'method')
+        self.assertEqual(req.rpc_params, ['foo', 'bar'])
 
     def dumps_loads(self, value):
         self.assertEqual(json.loads(
@@ -43,9 +53,17 @@ class JSONTestCase(unittest.TestCase):
 class XMLTestCase(unittest.TestCase):
     'Test XML'
 
+    def test_xml_request(self):
+        req = XMLRequest.from_values(
+            data=b"<?xml version='1.0'?>\n<methodCall>\n<methodName>method</methodName>\n<params>\n<param>\n<value><string>foo</string></value>\n</param>\n<param>\n<value><string>bar</string></value>\n</param>\n</params>\n</methodCall>\n",
+            content_type='text/xml')
+        self.assertEqual(req.parsed_data, (('foo', 'bar'), 'method'))
+        self.assertEqual(req.rpc_method, 'method')
+        self.assertEqual(req.rpc_params, ('foo', 'bar'))
+
     def dumps_loads(self, value):
-        s = xmlrpclib.dumps((value,))
-        result, _ = xmlrpclib.loads(s)
+        s = client.dumps((value,))
+        result, _ = client.loads(s)
         result, = result
         self.assertEqual(value, result)
 

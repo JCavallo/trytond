@@ -10,9 +10,13 @@ from trytond.tools import ClassProperty, is_instance_method
 from trytond.pyson import PYSONDecoder, PYSONEncoder
 from trytond.transaction import Transaction
 from trytond.cache import Cache
+from trytond.config import config
 from trytond.pool import Pool
 from trytond.exceptions import UserError
 from trytond.rpc import RPC
+from trytond.server_context import ServerContext
+
+from .fields import on_change_result
 
 __all__ = ['ModelView']
 
@@ -25,20 +29,18 @@ def _find(tree, element):
     return None
 
 
-def _inherit_apply(src, inherit):
-    tree_src = etree.fromstring(src)
-    tree_inherit = etree.fromstring(inherit)
-    root_inherit = tree_inherit.getroottree().getroot()
+def _inherit_apply(tree, inherit):
+    root_inherit = inherit.getroottree().getroot()
     for element2 in root_inherit:
         if element2.tag != 'xpath':
             continue
-        element = _find(tree_src, element2)
+        element = _find(tree, element2)
         if element is not None:
             pos = element2.get('position', 'inside')
             if pos == 'replace':
                 parent = element.getparent()
                 if parent is None:
-                    tree_src, = element2
+                    tree, = element2
                     continue
                 enext = element.getnext()
                 if enext is not None:
@@ -75,7 +77,7 @@ def _inherit_apply(src, inherit):
             raise AttributeError(
                 'Couldn\'t find tag (%s: %s) in parent view!'
                 % (element2.tag, element2.get('expr')))
-    return etree.tostring(tree_src, encoding='utf-8')
+    return tree
 
 
 def on_change(func):
@@ -86,10 +88,6 @@ def on_change(func):
         return self
     wrapper.on_change = True
     return wrapper
-
-
-def on_change_result(record):
-    return record._changed_values
 
 
 class ModelView(Model):
@@ -181,21 +179,7 @@ class ModelView(Model):
 
         # Update __rpc__
         for field_name, field in cls._fields.iteritems():
-            if isinstance(field, (fields.Selection, fields.Reference)) \
-                    and not isinstance(field.selection, (list, tuple)) \
-                    and field.selection not in cls.__rpc__:
-                instantiate = 0 if field.selection_change_with else None
-                cls.__rpc__.setdefault(field.selection,
-                    RPC(instantiate=instantiate))
-
-            for attribute in ('on_change', 'on_change_with', 'autocomplete'):
-                function_name = '%s_%s' % (attribute, field_name)
-                if getattr(cls, function_name, None):
-                    result = None
-                    if attribute == 'on_change':
-                        result = on_change_result
-                    cls.__rpc__.setdefault(function_name,
-                        RPC(instantiate=0, result=result))
+            field.set_rpc(cls)
 
         for button in cls._buttons:
             if not is_instance_method(cls, button):
@@ -243,13 +227,13 @@ class ModelView(Model):
         else:
             domain = [
                 ('model', '=', cls.__name__),
-                ('type', '=', view_type),
                 ['OR',
                     ('inherit', '=', None),
                     ('inherit.model', '!=', cls.__name__),
                     ],
                 ]
             views = View.search(domain)
+            views = filter(lambda v: v.rng_type == view_type, views)
             if views:
                 view = views[0]
         if view:
@@ -260,7 +244,7 @@ class ModelView(Model):
 
         # if a view was found
         if view:
-            result['type'] = view.type
+            result['type'] = view.rng_type
             result['view_id'] = view_id
             result['arch'] = view.arch
             result['field_childs'] = view.field_childs
@@ -294,6 +278,8 @@ class ModelView(Model):
                     # There is perhaps a new module in the directory
                     ModelView._reset_modules_list()
                     raise_p = True
+            parser = etree.XMLParser(remove_comments=True)
+            tree = etree.fromstring(result['arch'], parser=parser)
             for view in views:
                 if view.domain:
                     if not PYSONDecoder({'context': Transaction().context}
@@ -301,14 +287,17 @@ class ModelView(Model):
                         continue
                 if not view.arch or not view.arch.strip():
                     continue
-                result['arch'] = _inherit_apply(result['arch'], view.arch)
+                tree_inherit = etree.fromstring(view.arch, parser=parser)
+                tree = _inherit_apply(tree, tree_inherit)
+            result['arch'] = etree.tostring(
+                tree, encoding='utf-8').decode('utf-8')
 
         # otherwise, build some kind of default view
         else:
             if view_type == 'form':
                 res = cls.fields_get()
                 xml = '''<?xml version="1.0"?>''' \
-                    '''<form string="%s" col="4">''' % (cls.__doc__,)
+                    '''<form col="4">'''
                 for i in res:
                     if i in ('create_uid', 'create_date',
                             'write_uid', 'write_date', 'id', 'rec_name'):
@@ -326,8 +315,8 @@ class ModelView(Model):
                 if cls._rec_name in cls._fields:
                     field = cls._rec_name
                 xml = '''<?xml version="1.0"?>''' \
-                    '''<tree string="%s"><field name="%s"/></tree>''' \
-                    % (cls.__doc__, field)
+                    '''<tree><field name="%s"/></tree>''' \
+                    % (field,)
             else:
                 xml = ''
             result['type'] = view_type
@@ -362,7 +351,9 @@ class ModelView(Model):
         else:
             result['children_definitions'] = {}
 
-        cls._fields_view_get_cache.set(key, result)
+        if not config.getboolean('cache', 'disable_fields_view_get_cache',
+                default=False):
+            cls._fields_view_get_cache.set(key, result)
         return result
 
     @classmethod
@@ -389,18 +380,6 @@ class ModelView(Model):
             }
         cls._view_toolbar_get_cache.set(key, result)
         return result
-
-    @classmethod
-    def view_header_get(cls, value, view_type='form'):
-        """
-        Overload this method if you need a window title.
-        which depends on the context
-
-        :param value: the default header string
-        :param view_type: the type of the view
-        :return: the header string of the view
-        """
-        return value
 
     @classmethod
     def view_attributes(cls):
@@ -448,8 +427,11 @@ class ModelView(Model):
                     parent.remove(element)
                 elif type == 'form':
                     element.tag = 'label'
+                    colspan = element.attrib.get('colspan')
                     element.attrib.clear()
                     element.attrib['id'] = 'hidden %s-%s' % (field, i)
+                    if colspan is not None:
+                        element.attrib['colspan'] = colspan
 
         if type == 'tree':
             ViewTreeWidth = pool.get('ir.ui.view_tree_width')
@@ -482,7 +464,8 @@ class ModelView(Model):
         if 'active' in cls._fields:
             fields_def.setdefault('active', {'name': 'active'})
 
-        arch = etree.tostring(tree, encoding='utf-8', pretty_print=False)
+        arch = etree.tostring(
+            tree, encoding='utf-8', pretty_print=False).decode('utf-8')
         fields2 = cls.fields_get(fields_def.keys())
         for field in fields_def:
             if field in fields2:
@@ -495,6 +478,7 @@ class ModelView(Model):
         pool = Pool()
         Translation = pool.get('ir.translation')
         ModelData = pool.get('ir.model.data')
+        ModelAccess = pool.get('ir.model.access')
         Button = pool.get('ir.model.button')
         User = pool.get('res.user')
 
@@ -504,62 +488,71 @@ class ModelView(Model):
             fields_attrs = {}
         else:
             fields_attrs = copy.deepcopy(fields_attrs)
-        childs = True
 
-        if element.tag in ('field', 'label', 'separator', 'group', 'suffix',
-                'prefix'):
-            for attr in ('name', 'icon'):
-                if element.get(attr):
-                    fields_attrs.setdefault(element.get(attr), {})
-                    if type != 'form':
-                        continue
+        def set_view_ids(element):
+            view_ids = []
+            if element.get('view_ids'):
+                for view_id in element.get('view_ids').split(','):
                     try:
-                        field = cls._fields[element.get(attr)]
-                        if hasattr(field, 'model_name'):
-                            relation = field.model_name
-                        else:
-                            relation = field.get_target().__name__
-                    except Exception:
-                        relation = False
-                    if element.get('relation'):
-                        relation = element.get('relation')
-                    if relation and element.tag == 'field':
-                        childs = False
-                        views = {}
-                        mode = (element.attrib.pop('mode', None)
-                            or 'tree,form').split(',')
-                        view_ids = []
-                        if element.get('view_ids'):
-                            for view_id in element.get('view_ids').split(','):
-                                try:
-                                    view_ids.append(int(view_id))
-                                except ValueError:
-                                    view_ids.append(ModelData.get_id(
-                                            *view_id.split('.')))
-                        Relation = pool.get(relation)
-                        if (not len(element)
-                                and type == 'form'
-                                and field._type in ('one2many', 'many2many')):
-                            # Prefetch only the first view to prevent infinite
-                            # loop
-                            if view_ids:
-                                for view_id in view_ids:
-                                    view = Relation.fields_view_get(
-                                        view_id=view_id)
-                                    views[str(view_id)] = view
-                                    break
-                            else:
-                                for view_type in mode:
-                                    views[view_type] = \
-                                        Relation.fields_view_get(
-                                            view_type=view_type)
-                                    break
-                        element.attrib['mode'] = ','.join(mode)
-                        element.attrib['view_ids'] = ','.join(
-                            map(str, view_ids))
-                        if not element.get('relation'):
-                            fields_attrs[element.get(attr)].setdefault('views',
-                                {}).update(views)
+                        view_ids.append(int(view_id))
+                    except ValueError:
+                        view_ids.append(ModelData.get_id(*view_id.split('.')))
+                element.attrib['view_ids'] = ','.join(map(str, view_ids))
+            return view_ids
+
+        def get_relation(field):
+            if hasattr(field, 'model_name'):
+                return field.model_name
+            elif hasattr(field, 'get_target'):
+                return field.get_target().__name__
+
+        def get_views(relation, view_ids, mode):
+            Relation = pool.get(relation)
+            views = {}
+            if field._type in ['one2many', 'many2many']:
+                # Prefetch only the first view to prevent infinite loop
+                if view_ids:
+                    for view_id in view_ids:
+                        view = Relation.fields_view_get(view_id=view_id)
+                        views[str(view_id)] = view
+                        break
+                else:
+                    for view_type in mode:
+                        views[view_type] = (
+                            Relation.fields_view_get(view_type=view_type))
+                        break
+            return views
+
+        for attr in ('name', 'icon'):
+            if not element.get(attr):
+                continue
+            fields_attrs.setdefault(element.get(attr), {})
+
+        if element.tag == 'field' and type in ['tree', 'form']:
+            for attr in ('name', 'icon'):
+                fname = element.get(attr)
+                if not fname:
+                    continue
+                view_ids = set_view_ids(element)
+                if type != 'form':
+                    continue
+                # Coog Spec : Ignore fields which are not in the view, to allow
+                # dynamic sub_fields for Dict fields
+                if fname not in cls._fields:
+                    continue
+                field = cls._fields[fname]
+                relation = get_relation(field)
+                if element.get('relation'):
+                    relation = element.get('relation')
+                if not relation:
+                    continue
+                mode = (
+                    element.attrib.pop('mode', None) or 'tree,form').split(',')
+                views = get_views(relation, view_ids, mode)
+                element.attrib['mode'] = ','.join(mode)
+                if not element.get('relation'):
+                    fields_attrs[fname].setdefault('views', {}).update(views)
+
             if type == 'tree' and element.get('name') in fields_width:
                 element.set('width', str(fields_width[element.get('name')]))
 
@@ -572,10 +565,17 @@ class ModelView(Model):
                 states = {}
             groups = set(User.get_groups())
             button_groups = Button.get_groups(cls.__name__, button_name)
-            if button_groups and not groups & button_groups:
+            if ((button_groups and not groups & button_groups)
+                    or (not button_groups
+                        and not ModelAccess.check(
+                            cls.__name__, 'write', raise_exception=False))):
                 states = states.copy()
                 states['readonly'] = True
             element.set('states', encoder.encode(states))
+
+            button_rules = Button.get_rules(cls.__name__, button_name)
+            if button_rules:
+                element.set('rule', '1')
 
             change = cls.__change_buttons[button_name]
             if change:
@@ -586,7 +586,7 @@ class ModelView(Model):
                 element.set('type', 'instance')
 
         # translate view
-        if Transaction().language != 'en_US':
+        if Transaction().language != 'en':
             for attr in ('string', 'sum', 'confirm', 'help'):
                 if element.get(attr):
                     trans = Translation.get_source(cls.__name__, 'view',
@@ -594,46 +594,61 @@ class ModelView(Model):
                     if trans:
                         element.set(attr, trans)
 
-        # Set header string
-        if element.tag in ('form', 'tree', 'graph'):
-            element.set('string', cls.view_header_get(
-                element.get('string') or '', view_type=element.tag))
-
         if element.tag == 'tree' and element.get('sequence'):
             fields_attrs.setdefault(element.get('sequence'), {})
 
         if element.tag == 'calendar':
-            for attr in ('dtstart', 'dtend'):
+            for attr in ['dtstart', 'dtend', 'color', 'background_color']:
                 if element.get(attr):
                     fields_attrs.setdefault(element.get(attr), {})
 
-        if childs:
-            for field in element:
-                fields_attrs = cls.__view_look_dom(field, type,
-                    fields_width=fields_width, fields_attrs=fields_attrs)
+        for field in element:
+            fields_attrs = cls.__view_look_dom(field, type,
+                fields_width=fields_width, fields_attrs=fields_attrs)
         return fields_attrs
 
     @staticmethod
     def button(func):
         @wraps(func)
-        def wrapper(cls, *args, **kwargs):
+        def wrapper(cls, records, *args, **kwargs):
             pool = Pool()
             ModelAccess = pool.get('ir.model.access')
             Button = pool.get('ir.model.button')
+            ButtonClick = pool.get('ir.model.button.click')
             User = pool.get('res.user')
 
-            if ((Transaction().user != 0)
-                    and Transaction().context.get('_check_access')):
+            transaction = Transaction()
+            check_access = transaction.context.get('_check_access')
+
+            if (transaction.user != 0) and check_access:
                 ModelAccess.check(cls.__name__, 'read')
-                ModelAccess.check(cls.__name__, 'write')
                 groups = set(User.get_groups())
                 button_groups = Button.get_groups(cls.__name__,
                     func.__name__)
-                if button_groups and not groups & button_groups:
-                    raise UserError('Calling button %s on %s is not allowed!'
-                        % (func.__name__, cls.__name__))
+                if button_groups:
+                    if not groups & button_groups:
+                        raise UserError(
+                            'Calling button %s on %s is not allowed!'
+                            % (func.__name__, cls.__name__))
+                else:
+                    ModelAccess.check(cls.__name__, 'write')
+
             with Transaction().set_context(_check_access=False):
-                return func(cls, *args, **kwargs)
+                if (transaction.user != 0) and check_access:
+                    button_rules = Button.get_rules(
+                        cls.__name__, func.__name__)
+                    if button_rules:
+                        clicks = ButtonClick.register(
+                            cls.__name__, func.__name__, records)
+                        records = filter(
+                            lambda r: all(br.test(r, clicks.get(r.id, []))
+                                for br in button_rules),
+                            records)
+                # Reset click after filtering in case the button also has rules
+                names = Button.get_reset(cls.__name__, func.__name__)
+                if names:
+                    ButtonClick.reset(cls.__name__, names, records)
+                return func(cls, records, *args, **kwargs)
         return wrapper
 
     @staticmethod
@@ -659,7 +674,6 @@ class ModelView(Model):
     @staticmethod
     def button_change(*fields):
         def decorator(func):
-            func = ModelView.button(func)
             func = on_change(func)
             func.change = set(fields)
             return func
@@ -709,11 +723,11 @@ class ModelView(Model):
                 continue
             if field._type in ('many2one', 'one2one', 'reference'):
                 if value:
-                    if isinstance(value, ModelStorage):
-                        changed['%s.rec_name' % fname] = value.rec_name
-                    if value.id is None:
+                    if value.id is None or value.id < 0:
                         # Don't consider temporary instance as a change
                         continue
+                    if isinstance(value, ModelStorage):
+                        changed['%s.rec_name' % fname] = value.rec_name
                     if field._type == 'reference':
                         value = str(value)
                     else:
@@ -731,7 +745,12 @@ class ModelView(Model):
                             target_changed['id'] = target.id
                             value['update'].append(target_changed)
                     else:
-                        value['add'].append((i, target._default_values))
+                        # JACK: redmine issue #5873
+                        # automatically get a one2Many rec_name
+                        # to limit number of requests
+                        with ServerContext().set_context(
+                                _default_rec_names=True):
+                            value['add'].append((i, target._default_values))
                 if not value['remove']:
                     del value['remove']
                 if not value:

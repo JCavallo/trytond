@@ -3,7 +3,6 @@
 
 import copy
 import collections
-import warnings
 from functools import total_ordering
 
 from trytond.model import fields
@@ -13,6 +12,7 @@ from trytond.pyson import PYSONEncoder
 from trytond.transaction import Transaction
 from trytond.url import URLMixin
 from trytond.rpc import RPC
+from trytond.server_context import ServerContext
 
 __all__ = ['Model']
 
@@ -124,8 +124,13 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
         If with_rec_name is True, rec_name will be added.
         '''
         pool = Pool()
-        Property = pool.get('ir.property')
         value = {}
+
+        default_rec_name = Transaction().context.get('default_rec_name')
+        if (default_rec_name
+                and cls._rec_name in cls._fields
+                and cls._rec_name in fields_names):
+            value[cls._rec_name] = default_rec_name
 
         # get the default values defined in the object
         for field_name in fields_names:
@@ -135,8 +140,6 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
             if (field._type == 'boolean'
                     and field_name not in value):
                 value[field_name] = False
-            if isinstance(field, fields.Property):
-                value[field_name] = Property.get(field_name, cls.__name__)
             if (with_rec_name
                     and field._type in ('many2one',)
                     and value.get(field_name)):
@@ -236,11 +239,9 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
                     and not getattr(cls, 'order_%s' % field, None)):
                 res[field]['sortable'] = False
             if ((isinstance(cls._fields[field], fields.Function)
-                    and not cls._fields[field].searcher)
-                    or (cls._fields[field]._type in ('binary', 'sha'))
-                    or (isinstance(cls._fields[field], fields.Property)
-                        and isinstance(cls._fields[field]._field,
-                            fields.Many2One))):
+                        and not (cls._fields[field].searcher
+                            or getattr(cls, 'domain_%s' % field, None)))
+                    or (cls._fields[field]._type in ('binary', 'sha'))):
                 res[field]['searchable'] = False
             else:
                 res[field]['searchable'] = True
@@ -324,6 +325,9 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
                     True)
                 res[field]['delete'] = accesses.get(field, {}).get('delete',
                     True)
+            filter_ = getattr(cls._fields[field], 'filter', None)
+            if filter_:
+                res[field]['domain'] = ['AND', res[field]['domain'], filter_]
 
             # convert attributes into pyson
             for attr in ('states', 'domain', 'context', 'digits', 'size',
@@ -347,42 +351,41 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
         super(Model, self).__init__()
         if id is not None:
             id = int(id)
-        self.__dict__['id'] = id
-        self._values = None
-        parent_values = {}
-        for name, value in kwargs.iteritems():
-            if not name.startswith('_parent_'):
-                setattr(self, name, value)
-            else:
-                parent_values[name] = value
-        for name, value in parent_values.iteritems():
-            parent_name, field = name.split('.', 1)
-            parent_name = parent_name[8:]  # Strip '_parent_'
-            parent = getattr(self, parent_name, None)
-            if parent is not None:
-                setattr(parent, field, value)
-            else:
-                setattr(self, parent_name, {field: value})
-        self._init_values = self._values.copy() if self._values else None
+        self._id = id
+        if kwargs:
+            self._values = {}
+            parent_values = {}
+            for name, value in kwargs.iteritems():
+                if not name.startswith('_parent_'):
+                    setattr(self, name, value)
+                else:
+                    parent_values[name] = value
+
+            def set_parent_value(record, name, value):
+                parent_name, field = name.split('.', 1)
+                parent_name = parent_name[8:]  # Strip '_parent_'
+                parent = getattr(record, parent_name, None)
+                if parent is not None:
+                    if not field.startswith('_parent_'):
+                        setattr(parent, field, value)
+                    else:
+                        set_parent_value(parent, field, value)
+                else:
+                    setattr(record, parent_name, {field: value})
+
+            for name, value in parent_values.iteritems():
+                set_parent_value(self, name, value)
+            self._init_values = self._values.copy()
+        else:
+            self._values = None
+            self._init_values = None
 
     def __getattr__(self, name):
-        if name == 'id':
-            return self.__dict__['id']
-        elif self._values and name in self._values:
-            return self._values.get(name)
-        raise AttributeError("'%s' Model has no attribute '%s': %s"
-            % (self.__name__, name, self._values))
-
-    def __setattr__(self, name, value):
-        if name == 'id':
-            self.__dict__['id'] = value
-            return
-        super(Model, self).__setattr__(name, value)
-
-    def __getitem__(self, name):
-        warnings.warn('Use __getattr__ instead of __getitem__',
-            DeprecationWarning, stacklevel=2)
-        return getattr(self, name)
+        try:
+            return self._values[name]
+        except (KeyError, TypeError):
+            raise AttributeError("'%s' Model has no attribute '%s': %s"
+                % (self.__name__, name, self._values))
 
     def __contains__(self, name):
         return name in self._fields
@@ -397,7 +400,7 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
         return u'%s,%s' % (self.__name__, self.id)
 
     def __repr__(self):
-        if self.id < 0:
+        if self.id is None or self.id < 0:
             return "Pool().get('%s')(**%s)" % (self.__name__,
                 repr(self._default_values))
         else:
@@ -434,11 +437,16 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
             - for One2Many: the list of `_default_values`
         """
         values = {}
+        # JCA : preload rec names if in called from _changed_values
+        add_rec_names = ServerContext().get('_default_rec_names', False)
         if self._values:
             for fname, value in self._values.iteritems():
                 field = self._fields[fname]
+                rec_name = None
                 if field._type in ('many2one', 'one2one', 'reference'):
                     if value:
+                        if add_rec_names:
+                            rec_name = getattr(value, 'rec_name', '')
                         if field._type == 'reference':
                             value = str(value)
                         else:
@@ -449,4 +457,6 @@ class Model(WarningErrorMixin, URLMixin, PoolBase):
                     else:
                         value = [r.id for r in value]
                 values[fname] = value
+                if rec_name is not None:
+                    values['%s.rec_name' % fname] = rec_name
         return values

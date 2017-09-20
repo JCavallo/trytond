@@ -1,12 +1,17 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
 "User"
+from __future__ import division
 import copy
 import string
 import random
 import hashlib
 import time
 import datetime
+import logging
+import uuid
+import mmap
+from functools import wraps
 from itertools import groupby, ifilter
 from operator import attrgetter
 from ast import literal_eval
@@ -21,7 +26,7 @@ try:
 except ImportError:
     bcrypt = None
 
-from ..model import ModelView, ModelSQL, fields, Unique
+from ..model import ModelView, ModelSQL, Workflow, fields, Unique
 from ..wizard import Wizard, StateView, Button, StateTransition
 from ..tools import grouped_slice
 from .. import backend
@@ -29,19 +34,22 @@ from ..transaction import Transaction
 from ..cache import Cache
 from ..pool import Pool
 from ..config import config
-from ..pyson import PYSONEncoder
+from ..pyson import PYSONEncoder, Eval
 from ..rpc import RPC
+from ..exceptions import LoginException, RateLimitException
 
 __all__ = [
     'User', 'LoginAttempt', 'UserAction', 'UserGroup', 'Warning_',
+    'UserApplication',
     'UserConfigStart', 'UserConfig',
     ]
+logger = logging.getLogger(__name__)
 
 
 class User(ModelSQL, ModelView):
     "User"
     __name__ = "res.user"
-    name = fields.Char('Name', required=True, select=True, translate=True)
+    name = fields.Char('Name', select=True)
     login = fields.Char('Login', required=True)
     password_hash = fields.Char('Password Hash')
     password = fields.Function(fields.Char('Password'), getter='get_password',
@@ -58,6 +66,8 @@ class User(ModelSQL, ModelView):
     rule_groups = fields.Many2Many('ir.rule.group-res.user',
        'user', 'rule_group', 'Rules',
        domain=[('global_p', '!=', True), ('default_p', '!=', True)])
+    applications = fields.One2Many(
+        'res.user.application', 'user', "Applications")
     language = fields.Many2One('ir.lang', 'Language',
         domain=['OR',
             ('translatable', '=', True),
@@ -96,6 +106,7 @@ class User(ModelSQL, ModelView):
             'actions',
             'status_bar',
             'warnings',
+            'applications',
         ]
         cls._context_fields = [
             'language',
@@ -107,14 +118,25 @@ class User(ModelSQL, ModelView):
                     'for logging purpose.\n'
                     'Instead you must inactivate them.'),
                 'wrong_password': 'Wrong password!',
+                'password_length': "The password is too short.",
+                'password_forbidden': "The password is forbidden.",
+                'password_name': (
+                    "The password can not be the same as user name."),
+                'password_login': (
+                    "The password can not be the same as user login."),
+                'password_email': (
+                    "The password can not be the same as user email."),
+                'password_entropy': (
+                    "The password contains too much times "
+                    "the same characters."),
                 })
 
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         super(User, cls).__register__(module_name)
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 1.6
 
@@ -147,6 +169,9 @@ class User(ModelSQL, ModelView):
                 values=[password_hash_new]))
             table.drop_column('password', exception=True)
             table.drop_column('salt', exception=True)
+
+        # Migration from 4.2: Remove required on name
+        table.not_null_action('name', action='remove')
 
     @staticmethod
     def default_active():
@@ -188,12 +213,46 @@ class User(ModelSQL, ModelView):
     def set_password(cls, users, name, value):
         if value == 'x' * 10:
             return
+
+        if Transaction().user and value:
+            cls.validate_password(value, users)
+
         to_write = []
         for user in users:
             to_write.extend([[user], {
                         'password_hash': cls.hash_password(value),
                         }])
         cls.write(*to_write)
+
+    @classmethod
+    def validate_password(cls, password, users):
+        password_b = password
+        if isinstance(password, unicode):
+            password_b = password.encode('utf-8')
+        length = config.getint('password', 'length', default=0)
+        if length > 0:
+            if len(password_b) < length:
+                cls.raise_user_error('password_length')
+        path = config.get('password', 'forbidden', default=None)
+        if path:
+            with open(path, 'r') as f:
+                forbidden = mmap.mmap(
+                    f.fileno(), 0, access=mmap.ACCESS_READ)
+                if forbidden.find(password_b) >= 0:
+                    cls.raise_user_error('password_forbidden')
+        entropy = config.getfloat('password', 'entropy', default=0)
+        if entropy:
+            if len(set(password)) / len(password) < entropy:
+                cls.raise_user_error('password_entropy')
+        for user in users:
+            # Use getattr to allow to use non User instances
+            for test, error in [
+                    (getattr(user, 'name', ''), 'password_name'),
+                    (getattr(user, 'login', ''), 'password_login'),
+                    (getattr(user, 'email', ''), 'password_email'),
+                    ]:
+                if test and password.lower() == test.lower():
+                    cls.raise_user_error(error)
 
     @staticmethod
     def get_sessions(users, name):
@@ -226,6 +285,14 @@ class User(ModelSQL, ModelView):
         return vals
 
     @classmethod
+    def read(cls, ids, fields_names=None):
+        result = super(User, cls).read(ids, fields_names=fields_names)
+        if not fields_names or 'password_hash' in fields_names:
+            for values in result:
+                values['password_hash'] = None
+        return result
+
+    @classmethod
     def create(cls, vlist):
         vlist = [cls._convert_vals(vals) for vals in vlist]
         res = super(User, cls).create(vlist)
@@ -243,7 +310,7 @@ class User(ModelSQL, ModelView):
             args.extend((users, cls._convert_vals(values)))
         super(User, cls).write(*args)
         # Clean cursor cache as it could be filled by domain_get
-        for cache in Transaction().cursor.cache.itervalues():
+        for cache in Transaction().cache.itervalues():
             if cls.__name__ in cache:
                 for user in all_users:
                     if user.id in cache[cls.__name__]:
@@ -268,6 +335,9 @@ class User(ModelSQL, ModelView):
     def delete(cls, users):
         cls.raise_user_error('delete_forbidden')
 
+    def get_rec_name(self, name):
+        return self.name if self.name else self.login
+
     @classmethod
     def search_rec_name(cls, name, clause):
         if clause[1].startswith('!') or clause[1].startswith('not '):
@@ -276,7 +346,7 @@ class User(ModelSQL, ModelView):
             bool_op = 'OR'
         return [bool_op,
             ('login',) + tuple(clause[1:]),
-            (cls._rec_name,) + tuple(clause[1:]),
+            ('name',) + tuple(clause[1:]),
             ]
 
     @classmethod
@@ -286,6 +356,8 @@ class User(ModelSQL, ModelView):
         default = default.copy()
 
         default['password'] = ''
+        default.setdefault('warnings')
+        default.setdefault('applications')
 
         new_users = []
         for user in users:
@@ -299,6 +371,7 @@ class User(ModelSQL, ModelView):
         pool = Pool()
         ModelData = pool.get('ir.model.data')
         Action = pool.get('ir.action')
+        Config = pool.get('ir.configuration')
         ConfigItem = pool.get('ir.module.config_wizard.item')
 
         res = {}
@@ -312,7 +385,7 @@ class User(ModelSQL, ModelView):
                     if user.language:
                         res['language'] = user.language.code
                     else:
-                        res['language'] = None
+                        res['language'] = Config.get_language()
                 else:
                     res[field] = None
                     if getattr(user, field):
@@ -360,9 +433,9 @@ class User(ModelSQL, ModelView):
         return preferences.copy()
 
     @classmethod
-    def set_preferences(cls, values, old_password=False):
+    def set_preferences(cls, values, parameters):
         '''
-        Set user preferences.
+        Set user preferences using login parameters
         '''
         pool = Pool()
         Lang = pool.get('ir.lang')
@@ -374,7 +447,7 @@ class User(ModelSQL, ModelView):
             if field not in fields or field == 'groups':
                 del values_clean[field]
             if field == 'password':
-                if not cls.get_login(user.login, old_password):
+                if not cls._login_password(user.login, parameters):
                     cls.raise_user_error('wrong_password')
             if field == 'language':
                 langs = Lang.search([
@@ -384,7 +457,13 @@ class User(ModelSQL, ModelView):
                     values_clean['language'] = langs[0].id
                 else:
                     del values_clean['language']
-        cls.write([user], values_clean)
+        # Set new context to write as validation could depend on it
+        context = {}
+        for name in cls._context_fields:
+            if name in values:
+                context[name] = values[name]
+        with Transaction().set_context(context):
+            cls.write([user], values_clean)
 
     @classmethod
     def get_preferences_fields_view(cls):
@@ -450,7 +529,7 @@ class User(ModelSQL, ModelView):
         result = cls._get_login_cache.get(login)
         if result:
             return result
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         table = cls.__table__()
         cursor.execute(*table.select(table.id, table.password_hash,
                 where=(table.login == login) & (table.active == True)))
@@ -459,19 +538,39 @@ class User(ModelSQL, ModelView):
         return result
 
     @classmethod
-    def get_login(cls, login, password):
+    def get_login(cls, login, parameters):
         '''
         Return user id if password matches
         '''
         LoginAttempt = Pool().get('res.user.login.attempt')
-        time.sleep(2 ** LoginAttempt.count(login) - 1)
-        user_id, password_hash = cls._get_login(login)
-        if user_id:
-            if cls.check_password(password, password_hash):
+        count = LoginAttempt.count(login)
+        if count > config.getint('session', 'max_attempt', default=5):
+            LoginAttempt.add(login)
+            raise RateLimitException()
+        Transaction().atexit(time.sleep, 2 ** count - 1)
+        for method in config.get(
+                'session', 'authentications', default='password').split(','):
+            try:
+                func = getattr(cls, '_login_%s' % method)
+            except AttributeError:
+                logger.info('Missing login method: %s', method)
+                continue
+            user_id = func(login, parameters)
+            if user_id:
                 LoginAttempt.remove(login)
                 return user_id
         LoginAttempt.add(login)
-        return 0
+
+    @classmethod
+    def _login_password(cls, login, parameters):
+        if 'password' not in parameters:
+            msg = cls.fields_get(['password'])['password']['string']
+            raise LoginException('password', msg, type='password')
+        user_id, password_hash = cls._get_login(login)
+        if user_id and password_hash:
+            password = parameters['password']
+            if cls.check_password(password, password_hash):
+                return user_id
 
     @staticmethod
     def hash_method():
@@ -494,20 +593,21 @@ class User(ModelSQL, ModelView):
 
     @classmethod
     def hash_sha1(cls, password):
-        if isinstance(password, unicode):
-            password = password.encode('utf-8')
         salt = ''.join(random.sample(string.ascii_letters + string.digits, 8))
-        hash_ = hashlib.sha1(password + salt).hexdigest()
+        salted_password = password + salt
+        if isinstance(salted_password, unicode):
+            salted_password = salted_password.encode('utf-8')
+        hash_ = hashlib.sha1(salted_password).hexdigest()
         return '$'.join(['sha1', hash_, salt])
 
     @classmethod
     def check_sha1(cls, password, hash_):
         if isinstance(password, unicode):
             password = password.encode('utf-8')
-        if isinstance(hash_, unicode):
-            hash_ = hash_.encode('utf-8')
         hash_method, hash_, salt = hash_.split('$', 2)
         salt = salt or ''
+        if isinstance(salt, unicode):
+            salt = salt.encode('utf-8')
         assert hash_method == 'sha1'
         return hash_ == hashlib.sha1(password + salt).hexdigest()
 
@@ -515,16 +615,16 @@ class User(ModelSQL, ModelView):
     def hash_bcrypt(cls, password):
         if isinstance(password, unicode):
             password = password.encode('utf-8')
-        hash_ = bcrypt.hashpw(password, bcrypt.gensalt())
+        hash_ = bcrypt.hashpw(password, bcrypt.gensalt()).decode('utf-8')
         return '$'.join(['bcrypt', hash_])
 
     @classmethod
     def check_bcrypt(cls, password, hash_):
         if isinstance(password, unicode):
             password = password.encode('utf-8')
+        hash_method, hash_ = hash_.split('$', 1)
         if isinstance(hash_, unicode):
             hash_ = hash_.encode('utf-8')
-        hash_method, hash_ = hash_.split('$', 1)
         assert hash_method == 'bcrypt'
         return hash_ == bcrypt.hashpw(password, hash_)
 
@@ -536,13 +636,13 @@ class LoginAttempt(ModelSQL):
     the res.user table when in a long running process.
     """
     __name__ = 'res.user.login.attempt'
-    login = fields.Char('Login')
+    login = fields.Char('Login', size=512)
 
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
         super(LoginAttempt, cls).__register__(module_name)
-        table = TableHandler(Transaction().cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.8: remove user
         table.drop_column('user')
@@ -552,27 +652,39 @@ class LoginAttempt(ModelSQL):
         return (datetime.datetime.now()
             - datetime.timedelta(seconds=config.getint('session', 'timeout')))
 
+    def _login_size(func):
+        @wraps(func)
+        def wrapper(cls, login, *args, **kwargs):
+            return func(cls, login[:cls.login.size], *args, **kwargs)
+        return wrapper
+
     @classmethod
+    @_login_size
     def add(cls, login):
-        cls.delete(cls.search([
-                    ('create_date', '<', cls.delay()),
-                    ]))
+        cursor = Transaction().connection.cursor()
+        table = cls.__table__()
+        cursor.execute(*table.delete(where=table.create_date < cls.delay()))
+
         cls.create([{'login': login}])
 
     @classmethod
+    @_login_size
     def remove(cls, login):
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         table = cls.__table__()
         cursor.execute(*table.delete(where=table.login == login))
 
     @classmethod
+    @_login_size
     def count(cls, login):
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         table = cls.__table__()
         cursor.execute(*table.select(Count(Literal(1)),
                 where=(table.login == login)
                 & (table.create_date >= cls.delay())))
         return cursor.fetchone()[0]
+
+    del _login_size
 
 
 class UserAction(ModelSQL):
@@ -617,13 +729,12 @@ class UserGroup(ModelSQL):
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
         # Migration from 1.0 table name change
-        TableHandler.table_rename(cursor, 'res_group_user_rel', cls._table)
-        TableHandler.sequence_rename(cursor, 'res_group_user_rel_id_seq',
+        TableHandler.table_rename('res_group_user_rel', cls._table)
+        TableHandler.sequence_rename('res_group_user_rel_id_seq',
             cls._table + '_id_seq')
         # Migration from 2.0 uid and gid rename into user and group
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
         table.column_rename('uid', 'user')
         table.column_rename('gid', 'group')
         super(UserGroup, cls).__register__(module_name)
@@ -650,6 +761,99 @@ class Warning_(ModelSQL, ModelView):
             return True
         cls.delete([x for x in warnings if not x.always])
         return False
+
+
+class UserApplication(Workflow, ModelSQL, ModelView):
+    "User Application"
+    __name__ = 'res.user.application'
+    _rec_name = 'key'
+
+    key = fields.Char("Key", required=True, select=True)
+    user = fields.Many2One('res.user', "User", select=True)
+    application = fields.Selection([], "Application")
+    state = fields.Selection([
+            ('requested', "Requested"),
+            ('validated', "Validated"),
+            ('cancelled', "Cancelled"),
+            ], "State", readonly=True)
+
+    @classmethod
+    def __setup__(cls):
+        super(UserApplication, cls).__setup__()
+        cls._transitions |= set((
+                ('requested', 'validated'),
+                ('requested', 'cancelled'),
+                ('validated', 'cancelled'),
+                ))
+        cls._buttons.update({
+                'validate_': {
+                    'invisible': Eval('state') != 'requested',
+                    },
+                'cancel': {
+                    'invisible': Eval('state') == 'cancelled',
+                    },
+                })
+
+    @classmethod
+    def default_key(cls):
+        return ''.join(uuid.uuid4().hex for _ in xrange(4))
+
+    @classmethod
+    def default_state(cls):
+        return 'requested'
+
+    @classmethod
+    @ModelView.button
+    @Workflow.transition('validated')
+    def validate_(cls, applications):
+        pass
+
+    @classmethod
+    @ModelView.button
+    @Workflow.transition('cancelled')
+    def cancel(cls, applications):
+        pass
+
+    @classmethod
+    def count(cls, user_id):
+        return cls.search([
+                ('user', '=', user_id),
+                ('state', '=', 'requested'),
+                ], count=True)
+
+    @classmethod
+    def check(cls, key, application):
+        records = cls.search([
+                ('key', '=', key),
+                ('application', '=', application),
+                ('state', '=', 'validated'),
+                ], limit=1)
+        if not records:
+            return
+        record, = records
+        return record
+
+    @classmethod
+    def create(cls, vlist):
+        pool = Pool()
+        User = pool.get('res.user')
+        applications = super(UserApplication, cls).create(vlist)
+        User._get_preferences_cache.clear()
+        return applications
+
+    @classmethod
+    def write(cls, *args):
+        pool = Pool()
+        User = pool.get('res.user')
+        super(UserApplication, cls).write(*args)
+        User._get_preferences_cache.clear()
+
+    @classmethod
+    def delete(cls, applications):
+        pool = Pool()
+        User = pool.get('res.user')
+        super(UserApplication, cls).delete(applications)
+        User._get_preferences_cache.clear()
 
 
 class UserConfigStart(ModelView):

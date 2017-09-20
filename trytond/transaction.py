@@ -1,22 +1,13 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
+import logging
 from threading import local
 from sql import Flavor
 
-from trytond.tools.singleton import Singleton
 from trytond import backend
+from trytond.config import config
 
-
-class _TransactionManager(object):
-    '''
-    Manage transaction start/stop
-    '''
-
-    def __enter__(self):
-        return Transaction()
-
-    def __exit__(self, type, value, traceback):
-        Transaction().stop()
+logger = logging.getLogger(__name__)
 
 
 class _AttributeManager(object):
@@ -35,30 +26,26 @@ class _AttributeManager(object):
             setattr(Transaction(), name, value)
 
 
-class _CursorManager(object):
-    '''
-    Manage cursor of transaction
-    '''
+class _Local(local):
 
-    def __init__(self, cursor):
-        self.cursor = cursor
-
-    def __enter__(self):
-        return Transaction()
-
-    def __exit__(self, type, value, traceback):
-        Transaction().cursor.close()
-        Transaction().cursor = self.cursor
+    def __init__(self):
+        # Transaction stack control
+        self.transactions = []
 
 
-class Transaction(local):
+class Transaction(object):
     '''
     Control the transaction
     '''
-    __metaclass__ = Singleton
 
-    cursor = None
+    _local = _Local()
+
+    cache_keys = {'language', 'fuzzy_translation', '_datetime',
+        '_datetime_exclude'}
+
     database = None
+    readonly = False
+    connection = None
     close = None
     user = None
     context = None
@@ -67,15 +54,33 @@ class Transaction(local):
     delete = None  # TODO check to merge with delete_records
     timestamp = None
 
+    def __new__(cls, new=False):
+        transactions = cls._local.transactions
+        if new or not transactions:
+            instance = super(Transaction, cls).__new__(cls)
+            instance.cache = {}
+            instance._atexit = []
+            transactions.append(instance)
+        else:
+            instance = transactions[-1]
+        return instance
+
+    def get_cache(self):
+        from trytond.cache import LRUDict
+        keys = tuple(((key, self.context[key])
+                for key in sorted(self.cache_keys)
+                if key in self.context))
+        return self.cache.setdefault((self.user, keys),
+            LRUDict(config.getint('cache', 'model')))
+
     def start(self, database_name, user, readonly=False, context=None,
-            close=False, autocommit=False):
+            close=False, autocommit=False, _nocache=False):
         '''
         Start transaction
         '''
         Database = backend.get('Database')
         assert self.user is None
         assert self.database is None
-        assert self.cursor is None
         assert self.close is None
         assert self.context is None
         if not database_name:
@@ -83,11 +88,11 @@ class Transaction(local):
         else:
             database = Database(database_name).connect()
         Flavor.set(Database.flavor)
-        cursor = database.cursor(readonly=readonly,
-            autocommit=autocommit)
         self.user = user
         self.database = database
-        self.cursor = cursor
+        self.readonly = readonly
+        self.connection = database.get_connection(readonly=readonly,
+            autocommit=autocommit)
         self.close = close
         self.context = context or {}
         self.create_records = {}
@@ -95,24 +100,47 @@ class Transaction(local):
         self.delete = {}
         self.timestamp = {}
         self.counter = 0
-        return _TransactionManager()
+        self._datamanagers = []
+        self._nocache = _nocache
+        if not _nocache:
+            from trytond.cache import Cache
+            Cache.clean(database.name)
+        return self
 
-    def stop(self):
-        '''
-        Stop transaction
-        '''
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        transactions = self._local.transactions
         try:
-            self.cursor.close(close=self.close)
+            if transactions.count(self) == 1:
+                try:
+                    try:
+                        if type is None and not self.readonly:
+                            self.commit()
+                        else:
+                            self.rollback()
+                    finally:
+                        self.database.put_connection(
+                            self.connection, self.close)
+                finally:
+                    self.database = None
+                    self.readonly = False
+                    self.connection = None
+                    self.close = None
+                    self.user = None
+                    self.context = None
+                    self.create_records = None
+                    self.delete_records = None
+                    self.delete = None
+                    self.timestamp = None
+                    self._datamanagers = []
+
+                for func, args, kwargs in self._atexit:
+                    func(*args, **kwargs)
         finally:
-            self.cursor = None
-            self.database = None
-            self.close = None
-            self.user = None
-            self.context = None
-            self.create_records = None
-            self.delete_records = None
-            self.delete = None
-            self.timestamp = None
+            current_instance = transactions.pop()
+        assert current_instance is self, transactions
 
     def set_context(self, context=None, **kwargs):
         if context is None:
@@ -143,17 +171,62 @@ class Transaction(local):
         self.user = user
         return manager
 
-    def set_cursor(self, cursor):
-        manager = _AttributeManager(cursor=self.cursor)
-        self.cursor = cursor
-        return manager
+    def set_current_transaction(self, transaction):
+        self._local.transactions.append(transaction)
+        return transaction
 
-    def new_cursor(self, autocommit=False, readonly=False):
-        Database = backend.get('Database')
-        manager = _CursorManager(self.cursor)
-        database = Database(self.cursor.database_name).connect()
-        self.cursor = database.cursor(autocommit=autocommit, readonly=readonly)
-        return manager
+    def new_transaction(self, autocommit=False, readonly=False,
+            _nocache=False):
+        transaction = Transaction(new=True)
+        return transaction.start(self.database.name, self.user,
+            context=self.context, close=self.close, readonly=readonly,
+            autocommit=autocommit, _nocache=_nocache)
+
+    def commit(self):
+        try:
+            if self._datamanagers:
+                for datamanager in self._datamanagers:
+                    datamanager.tpc_begin(self)
+                for datamanager in self._datamanagers:
+                    datamanager.commit(self)
+                for datamanager in self._datamanagers:
+                    datamanager.tpc_vote(self)
+            self.connection.commit()
+        except:
+            self.rollback()
+            raise
+        else:
+            try:
+                for datamanager in self._datamanagers:
+                    datamanager.tpc_finish(self)
+            except:
+                logger.critical('A datamanager raised an exception in'
+                    ' tpc_finish, the data might be inconsistant',
+                    exc_info=True)
+        if not self._nocache:
+            from trytond.cache import Cache
+            Cache.resets(self.database.name)
+
+    def rollback(self):
+        for cache in self.cache.itervalues():
+            cache.clear()
+        for datamanager in self._datamanagers:
+            datamanager.tpc_abort(self)
+        self.connection.rollback()
+        if not self._nocache:
+            from trytond.cache import Cache
+            Cache.resets(self.database.name)
+
+    def join(self, datamanager):
+        try:
+            idx = self._datamanagers.index(datamanager)
+            return self._datamanagers[idx]
+        except ValueError:
+            self._datamanagers.append(datamanager)
+            return datamanager
+
+    def atexit(self, func, *args, **kwargs):
+        self._atexit.append((func, args, kwargs))
 
     @property
     def language(self):

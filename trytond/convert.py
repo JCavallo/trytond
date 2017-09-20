@@ -43,7 +43,7 @@ class MenuitemTagHandler:
         self.xml_id = None
 
     def startElement(self, name, attributes):
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
 
         values = {}
 
@@ -354,7 +354,7 @@ class Fs2bdAccessor:
         models = Model.browse(ids)
         for model in models:
             if model.id in self.browserecord[module][model_name]:
-                for cache in Transaction().cursor.cache.values():
+                for cache in Transaction().cache.values():
                     for cache in (cache, cache.get('_language_cache',
                                 {}).values()):
                         if (model_name in cache
@@ -389,7 +389,7 @@ class Fs2bdAccessor:
                     records = Model.search([
                         ('id', 'in', list(sub_record_ids)),
                         ], order=[('id', 'ASC')])
-                with Transaction().set_context(language='en_US'):
+                with Transaction().set_context(language='en'):
                     models = Model.browse(map(int, records))
                 for model in models:
                     self.browserecord[module][model_name][model.id] = model
@@ -415,8 +415,8 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
         self.grouped_model_data = []
         self.skip_data = False
         Module = pool.get('ir.module')
-        self.installed_modules = [m.name for m in Module.search([
-                    ('state', 'in', ['installed', 'to upgrade']),
+        self.activated_modules = [m.name for m in Module.search([
+                    ('state', 'in', ['activated', 'to upgrade']),
                     ])]
 
         # Tag handlders are used to delegate the processing
@@ -460,8 +460,6 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
 
             if name in self.taghandlerlist:
                 self.taghandler = self.taghandlerlist[name]
-                self.taghandler.startElement(name, attributes)
-
             elif name == "data":
                 self.noupdate = bool(int(attributes.get("noupdate", '0')))
                 self.grouped = bool(int(attributes.get('grouped', 0)))
@@ -473,7 +471,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
                 depends = attributes.get('depends', '').split(',')
                 depends = [m.strip() for m in depends if m]
                 if depends:
-                    if not all((m in self.installed_modules for m in depends)):
+                    if not all((m in self.activated_modules for m in depends)):
                         self.skip_data = True
 
             elif name == "tryton":
@@ -482,7 +480,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
             else:
                 logger.info("Tag %s not supported", (name,))
                 return
-        elif not self.skip_data:
+        if self.taghandler and not self.skip_data:
             self.taghandler.startElement(name, attributes)
 
     def characters(self, data):
@@ -589,7 +587,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
             if module == self.module and fs_id in self.to_delete:
                 self.to_delete.remove(fs_id)
 
-            if self.noupdate and self.module_state != 'to install':
+            if self.noupdate and self.module_state != 'to activate':
                 return
 
             # this record is already in the db:
@@ -604,7 +602,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
                 old_values = self.ModelData.load_values(old_values)
 
             for key in old_values:
-                if isinstance(old_values[key], str):
+                if isinstance(old_values[key], bytes):
                     # Fix for migration to unicode
                     old_values[key] = old_values[key].decode('utf-8')
 
@@ -617,7 +615,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
             # Re-create record if it was deleted
             if not record:
                 with Transaction().set_context(
-                        module=module, language='en_US'):
+                        module=module, language='en'):
                     record, = Model.create([values])
 
                 # reset_browsercord
@@ -644,7 +642,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
 
                 # if the fs value is the same has in the db, whe ignore it
                 val = values[key]
-                if isinstance(values[key], str):
+                if isinstance(values[key], bytes):
                     # Fix for migration to unicode
                     val = values[key].decode('utf-8')
                 if db_field == val:
@@ -695,9 +693,11 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
                 self.create_records(model, [values], [fs_id])
 
     def create_records(self, model, vlist, fs_ids):
+        logger.debug(self.module + ':loading ' +
+            ', '.join(str(x) for x in fs_ids[0:10]))
         Model = self.pool.get(model)
 
-        with Transaction().set_context(module=self.module, language='en_US'):
+        with Transaction().set_context(module=self.module, language='en'):
             records = Model.create(vlist)
 
         mdata_values = []
@@ -742,7 +742,7 @@ class TrytondXmlHandler(sax.handler.ContentHandler):
         if to_update:
             # write the values in the db:
             with Transaction().set_context(
-                    module=module, language='en_US'):
+                    module=module, language='en'):
                 Model.write(*to_update)
             self.fs2db.reset_browsercord(
                 module, Model.__name__, sum(to_update[::2], []))
@@ -783,7 +783,7 @@ def post_import(pool, module, to_delete):
     """
     Remove the records that are given in to_delete.
     """
-    cursor = Transaction().cursor
+    transaction = Transaction()
     mdata_delete = []
     ModelData = pool.get("ir.model.data")
 
@@ -810,9 +810,9 @@ def post_import(pool, module, to_delete):
                 logger.warning(
                     'Could not delete id %d of model %s because model no '
                     'longer exists.', db_id, model)
-            cursor.commit()
+            transaction.commit()
         except Exception:
-            cursor.rollback()
+            transaction.rollback()
             logger.error(
                 'Could not delete id: %d of model %s\n'
                 'There should be some relation '
@@ -826,7 +826,7 @@ def post_import(pool, module, to_delete):
                             'active': False,
                             })
                 except Exception:
-                    cursor.rollback()
+                    transaction.rollback()
                     logger.error(
                         'Could not inactivate id: %d of model %s\n',
                         db_id, model, exc_info=True)
@@ -834,6 +834,6 @@ def post_import(pool, module, to_delete):
     # Clean model_data:
     if mdata_delete:
         ModelData.delete(mdata_delete)
-        cursor.commit()
+        transaction.commit()
 
     return True

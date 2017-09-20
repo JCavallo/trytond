@@ -113,10 +113,11 @@ class Rule(ModelSQL, ModelView):
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
         super(Rule, cls).__register__(module_name)
-        table = TableHandler(Transaction().cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.6: replace field, operator and operand by domain
         table.not_null_action('field', action='remove')
+        table.drop_fk('field')
         table.not_null_action('operator', action='remove')
         table.not_null_action('operand', action='remove')
 
@@ -180,7 +181,7 @@ class Rule(ModelSQL, ModelView):
         RuleGroup_Group = pool.get('ir.rule.group-res.group')
         User_Group = pool.get('res.user-res.group')
 
-        cursor = Transaction().cursor
+        cursor = Transaction().connection.cursor()
         rule_table = cls.__table__()
         rule_group = RuleGroup.__table__()
         rule_group_user = RuleGroup_User.__table__()

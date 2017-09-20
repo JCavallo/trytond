@@ -1,7 +1,13 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
+from __future__ import absolute_import
+
+import sys
 import datetime
 import warnings
+warnings.filterwarnings('ignore', "", ImportWarning)
+from locale import CHAR_MAX
+warnings.resetwarnings()
 from ast import literal_eval
 
 from ..model import ModelView, ModelSQL, fields, Check
@@ -10,13 +16,8 @@ from ..tools import datetime_strftime
 from ..transaction import Transaction
 from ..pool import Pool
 from .time_locale import TIME_LOCALE
-from ..backend.database import CursorInterface
 
-warnings.filterwarnings('ignore', "", ImportWarning)
-from locale import CHAR_MAX
-warnings.resetwarnings()
-
-CursorInterface.cache_keys.add('translate_name')
+Transaction.cache_keys.add('translate_name')
 
 __all__ = [
     'Lang',
@@ -154,9 +155,11 @@ class Lang(ModelSQL, ModelView):
         Check the date format
         '''
         for lang in langs:
+            date = lang.date
+            if sys.version_info < (3,):
+                date = date.encode('utf-8')
             try:
-                datetime_strftime(datetime.datetime.now(),
-                        lang.date.encode('utf-8'))
+                datetime_strftime(datetime.datetime.now(), date)
             except Exception:
                 cls.raise_user_error('invalid_date', {
                         'format': lang.date,
@@ -409,13 +412,18 @@ class Lang(ModelSQL, ModelView):
         '''
         Convert datetime to a string as specified by the format argument.
         '''
+        code = code[:2]
         if code in TIME_LOCALE:
             for f, i in (('%a', 6), ('%A', 6), ('%b', 1), ('%B', 1)):
                 format = format.replace(f,
                         TIME_LOCALE[code][f][datetime.timetuple()[i]])
             format = format.replace('%p',
                 TIME_LOCALE[code]['%p'][datetime.timetuple()[3] < 12 and 0
-                    or 1]).encode('utf-8')
-        else:
+                    or 1])
+        # Encode and decode under Python2 because strftime use bytes/str.
+        if sys.version_info < (3,):
             format = format.encode('utf-8')
-        return datetime_strftime(datetime, format).decode('utf-8')
+        result = datetime_strftime(datetime, format)
+        if sys.version_info < (3,):
+            result = result.decode('utf-8')
+        return result

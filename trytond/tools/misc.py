@@ -6,55 +6,35 @@ Miscelleanous tools used by tryton
 """
 import os
 import sys
-import subprocess
-from threading import local
-import smtplib
 from array import array
 from itertools import islice
 import types
-import urllib
+import io
+import warnings
+import importlib
 
 from sql import Literal
 from sql.operators import Or
 
 from trytond.const import OPERATORS
-from trytond.config import config, parse_uri
 
 
-def find_in_path(name):
-    if os.name == "nt":
-        sep = ';'
-    else:
-        sep = ':'
-    path = [directory for directory in os.environ['PATH'].split(sep)
-            if os.path.isdir(directory)]
-    for directory in path:
-        val = os.path.join(directory, name)
-        if os.path.isfile(val) or os.path.islink(val):
-            return val
-    return name
-
-
-def exec_command_pipe(name, *args, **kwargs):
-    prog = find_in_path(name)
-    if not prog:
-        raise Exception('Couldn\'t find %s' % name)
-    if os.name == "nt":
-        cmd = '"' + prog + '" ' + ' '.join(args)
-    else:
-        cmd = prog + ' ' + ' '.join(args)
-    child_env = dict(os.environ)
-    if kwargs.get('env'):
-        child_env.update(kwargs['env'])
-    return subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, env=child_env)
-
-
-def file_open(name, mode="r", subdir='modules'):
+def file_open(name, mode="r", subdir='modules', encoding=None):
     """Open a file from the root dir, using a subdir folder."""
     from trytond.modules import EGG_MODULES
-    root_path = os.path.dirname(os.path.dirname(os.path.abspath(
-                unicode(__file__, sys.getfilesystemencoding()))))
+    if sys.version_info < (3,):
+        filename = __file__.decode(sys.getfilesystemencoding())
+    else:
+        filename = __file__
+    root_path = os.path.dirname(os.path.dirname(os.path.abspath(filename)))
+
+    def secure_join(root, *paths):
+        "Join paths and ensure it still below root"
+        path = os.path.join(root, *paths)
+        path = os.path.normpath(path)
+        if not path.startswith(os.path.join(root, '')):
+            raise IOError("Permission denied: %s" % name)
+        return path
 
     egg_name = False
     if subdir == 'modules':
@@ -63,38 +43,45 @@ def file_open(name, mode="r", subdir='modules'):
             epoint = EGG_MODULES[module_name]
             mod_path = os.path.join(epoint.dist.location,
                     *epoint.module_name.split('.')[:-1])
-            egg_name = os.path.join(mod_path, name)
+            mod_path = os.path.abspath(mod_path)
+            egg_name = secure_join(mod_path, name)
             if not os.path.isfile(egg_name):
                 # Find module in path
                 for path in sys.path:
                     mod_path = os.path.join(path,
                             *epoint.module_name.split('.')[:-1])
-                    egg_name = os.path.join(mod_path, name)
+                    mod_path = os.path.abspath(mod_path)
+                    egg_name = secure_join(mod_path, name)
                     if os.path.isfile(egg_name):
                         break
                 if not os.path.isfile(egg_name):
                     # When testing modules from setuptools location is the
                     # module directory
-                    egg_name = os.path.join(
+                    egg_name = secure_join(
                         os.path.dirname(epoint.dist.location), name)
 
     if subdir:
         if (subdir == 'modules'
                 and (name.startswith('ir' + os.sep)
                     or name.startswith('res' + os.sep)
-                    or name.startswith('webdav' + os.sep)
                     or name.startswith('tests' + os.sep))):
-            name = os.path.join(root_path, name)
+            name = secure_join(root_path, name)
         else:
-            name = os.path.join(root_path, subdir, name)
+            name = secure_join(root_path, subdir, name)
     else:
-        name = os.path.join(root_path, name)
+        name = secure_join(root_path, name)
 
     for i in (name, egg_name):
         if i and os.path.isfile(i):
-            return open(i, mode)
+            return io.open(i, mode, encoding=encoding)
 
     raise IOError('File not found : %s ' % name)
+
+
+def get_parent_language(code):
+    for sep in ['@', '_']:
+        if sep in code:
+            return code.rsplit(sep, 1)[0]
 
 
 def get_smtp_server():
@@ -104,21 +91,11 @@ def get_smtp_server():
     :return: A SMTP instance. The quit() method must be call when all
     the calls to sendmail() have been made.
     """
-    uri = parse_uri(config.get('email', 'uri'))
-    if uri.scheme.startswith('smtps'):
-        smtp_server = smtplib.SMTP_SSL(uri.hostname, uri.port)
-    else:
-        smtp_server = smtplib.SMTP(uri.hostname, uri.port)
-
-    if 'tls' in uri.scheme:
-        smtp_server.starttls()
-
-    if uri.username and uri.password:
-        smtp_server.login(
-            urllib.unquote_plus(uri.username),
-            urllib.unquote_plus(uri.password))
-
-    return smtp_server
+    from ..sendmail import _get_smtp_server
+    warnings.warn(
+        'get_smtp_server is deprecated use trytond.sendmail',
+        DeprecationWarning)
+    return _get_smtp_server()
 
 
 def memoize(maxsize):
@@ -182,120 +159,6 @@ def memoize(maxsize):
 
         return wrapper
     return wrap
-
-
-def mod10r(number):
-    """
-    Recursive mod10
-
-    :param number: a number
-    :return: the same number completed with the recursive modulo base 10
-    """
-    codec = [0, 9, 4, 6, 8, 2, 7, 1, 3, 5]
-    report = 0
-    result = ""
-    for digit in number:
-        result += digit
-        if digit.isdigit():
-            report = codec[(int(digit) + report) % 10]
-    return result + str((10 - report) % 10)
-
-
-class LocalDict(local):
-
-    def __init__(self):
-        super(LocalDict, self).__init__()
-        self._dict = {}
-
-    def __str__(self):
-        return str(self._dict)
-
-    def __repr__(self):
-        return str(self._dict)
-
-    def clear(self):
-        return self._dict.clear()
-
-    def keys(self):
-        return self._dict.keys()
-
-    def __setitem__(self, i, y):
-        self._dict.__setitem__(i, y)
-
-    def __getitem__(self, i):
-        return self._dict.__getitem__(i)
-
-    def copy(self):
-        return self._dict.copy()
-
-    def iteritems(self):
-        return self._dict.iteritems()
-
-    def iterkeys(self):
-        return self._dict.iterkeys()
-
-    def itervalues(self):
-        return self._dict.itervalues()
-
-    def pop(self, k, d=None):
-        return self._dict.pop(k, d)
-
-    def popitem(self):
-        return self._dict.popitem()
-
-    def setdefault(self, k, d=None):
-        return self._dict.setdefault(k, d)
-
-    def update(self, E, **F):
-        return self._dict.update(E, F)
-
-    def values(self):
-        return self._dict.values()
-
-    def get(self, k, d=None):
-        return self._dict.get(k, d)
-
-    def has_key(self, k):
-        return k in self._dict
-
-    def items(self):
-        return self._dict.items()
-
-    def __cmp__(self, y):
-        return self._dict.__cmp__(y)
-
-    def __contains__(self, k):
-        return self._dict.__contains__(k)
-
-    def __delitem__(self, y):
-        return self._dict.__delitem__(y)
-
-    def __eq__(self, y):
-        return self._dict.__eq__(y)
-
-    def __ge__(self, y):
-        return self._dict.__ge__(y)
-
-    def __gt__(self, y):
-        return self._dict.__gt__(y)
-
-    def __hash__(self):
-        return self._dict.__hash__()
-
-    def __iter__(self):
-        return self._dict.__iter__()
-
-    def __le__(self, y):
-        return self._dict.__le__(y)
-
-    def __len__(self):
-        return self._dict.__len__()
-
-    def __lt__(self, y):
-        return self._dict.__lt__(y)
-
-    def __ne__(self, y):
-        return self._dict.__ne__(y)
 
 
 def reduce_ids(field, ids):
@@ -371,7 +234,7 @@ def grouped_slice(records, count=None):
     'Grouped slice'
     from trytond.transaction import Transaction
     if count is None:
-        count = Transaction().cursor.IN_MAX
+        count = Transaction().database.IN_MAX
     for i in xrange(0, len(records), count):
         yield islice(records, i, i + count)
 
@@ -381,3 +244,17 @@ def is_instance_method(cls, method):
         type_ = klass.__dict__.get(method)
         if type_ is not None:
             return isinstance(type_, types.FunctionType)
+
+
+def resolve(name):
+    "Resolve a dotted name to a global object."
+    name = name.split('.')
+    used = name.pop(0)
+    found = importlib.import_module(used)
+    for n in name:
+        used = used + '.' + n
+        try:
+            found = getattr(found, n)
+        except AttributeError:
+            found = importlib.import_module(used)
+    return found

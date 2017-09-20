@@ -7,6 +7,30 @@ msgid "The name of the group must be unique!"
 msgstr "O nome do grupo deve ser único!"
 
 msgctxt "error:res.user:"
+msgid "The password can not be the same as user email."
+msgstr "A sena não pode ser a mesma que o email."
+
+msgctxt "error:res.user:"
+msgid "The password can not be the same as user login."
+msgstr "A senha não pode ser sa mesma que o usuário."
+
+msgctxt "error:res.user:"
+msgid "The password can not be the same as user name."
+msgstr "A senha não pode ser a mesma que o nome do usuário."
+
+msgctxt "error:res.user:"
+msgid "The password contains too much times the same characters."
+msgstr "A senha contém muitas vezes o mesmo caracter."
+
+msgctxt "error:res.user:"
+msgid "The password is forbidden."
+msgstr "A senha é proibida."
+
+msgctxt "error:res.user:"
+msgid "The password is too short."
+msgstr "A senha é muito curta."
+
+msgctxt "error:res.user:"
 msgid ""
 "Users can not be deleted for logging purpose.\n"
 "Instead you must inactivate them."
@@ -89,6 +113,14 @@ msgstr "Data de gravação"
 msgctxt "field:ir.model.button-res.group,write_uid:"
 msgid "Write User"
 msgstr "Gravado pelo usuário"
+
+msgctxt "field:ir.model.button.click,user:"
+msgid "User"
+msgstr "Usuário"
+
+msgctxt "field:ir.model.button.rule,group:"
+msgid "Group"
+msgstr "Grupo"
 
 msgctxt "field:ir.model.field-res.group,create_date:"
 msgid "Create Date"
@@ -262,6 +294,10 @@ msgctxt "field:ir.ui.menu-res.group,write_uid:"
 msgid "Write User"
 msgstr "Gravado pelo usuário"
 
+msgctxt "field:res.group,buttons:"
+msgid "Buttons"
+msgstr "Botões"
+
 msgctxt "field:res.group,create_date:"
 msgid "Create Date"
 msgstr "Data de criação"
@@ -317,6 +353,10 @@ msgstr "Ações"
 msgctxt "field:res.user,active:"
 msgid "Active"
 msgstr "Ativo"
+
+msgctxt "field:res.user,applications:"
+msgid "Applications"
+msgstr "Aplicações"
 
 msgctxt "field:res.user,create_date:"
 msgid "Create Date"
@@ -466,6 +506,46 @@ msgctxt "field:res.user-res.group,write_uid:"
 msgid "Write User"
 msgstr "Gravado pelo usuário"
 
+msgctxt "field:res.user.application,application:"
+msgid "Application"
+msgstr "Aplicação"
+
+msgctxt "field:res.user.application,create_date:"
+msgid "Create Date"
+msgstr "Data de criação"
+
+msgctxt "field:res.user.application,create_uid:"
+msgid "Create User"
+msgstr "Criado pelo usuário"
+
+msgctxt "field:res.user.application,id:"
+msgid "ID"
+msgstr "ID"
+
+msgctxt "field:res.user.application,key:"
+msgid "Key"
+msgstr "Chave"
+
+msgctxt "field:res.user.application,rec_name:"
+msgid "Name"
+msgstr "Nome"
+
+msgctxt "field:res.user.application,state:"
+msgid "State"
+msgstr "Estado"
+
+msgctxt "field:res.user.application,user:"
+msgid "User"
+msgstr "Usuário"
+
+msgctxt "field:res.user.application,write_date:"
+msgid "Write Date"
+msgstr "Data de edição"
+
+msgctxt "field:res.user.application,write_uid:"
+msgid "Write User"
+msgstr "Editado por"
+
 msgctxt "field:res.user.config.start,id:"
 msgid "ID"
 msgstr "ID"
@@ -610,14 +690,6 @@ msgctxt "model:res.user,name:"
 msgid "User"
 msgstr "Usuário"
 
-msgctxt "model:res.user,name:user_admin"
-msgid "Administrator"
-msgstr "Administrador"
-
-msgctxt "model:res.user,name:user_trigger"
-msgid "Cron Trigger"
-msgstr "Cron Trigger"
-
 msgctxt "model:res.user-ir.action,name:"
 msgid "User - Action"
 msgstr "Usuário - Ação"
@@ -625,6 +697,10 @@ msgstr "Usuário - Ação"
 msgctxt "model:res.user-res.group,name:"
 msgid "User - Group"
 msgstr "Usuário - Grupo"
+
+msgctxt "model:res.user.application,name:"
+msgid "User Application"
+msgstr "Aplicação do Usuário"
 
 msgctxt "model:res.user.config.start,name:"
 msgid "User Config Init"
@@ -638,25 +714,33 @@ msgctxt "model:res.user.warning,name:"
 msgid "User Warning"
 msgstr "Alerta de Usuário"
 
+msgctxt "selection:res.user.application,state:"
+msgid "Cancelled"
+msgstr "Cancelado"
+
+msgctxt "selection:res.user.application,state:"
+msgid "Requested"
+msgstr "Solicitado"
+
+msgctxt "selection:res.user.application,state:"
+msgid "Validated"
+msgstr "Validado"
+
 msgctxt "view:res.group:"
 msgid "Access Permissions"
 msgstr "Permissões de acesso"
 
 msgctxt "view:res.group:"
-msgid "Group"
-msgstr "Grupo"
-
-msgctxt "view:res.group:"
-msgid "Groups"
-msgstr "Grupos"
-
-msgctxt "view:res.group:"
 msgid "Members"
 msgstr "Membros"
 
-msgctxt "view:res.user.config.start:"
-msgid "Add Users"
-msgstr "Adicionar usuários"
+msgctxt "view:res.user.application:"
+msgid "Cancel"
+msgstr "Cancelar"
+
+msgctxt "view:res.user.application:"
+msgid "Validate"
+msgstr "Validar"
 
 msgctxt "view:res.user.config.start:"
 msgid "Be careful that the login must be unique!"
@@ -665,14 +749,6 @@ msgstr "O login deve ser único!"
 msgctxt "view:res.user.config.start:"
 msgid "You can now add some users into the system."
 msgstr "Você já pode adicionar usuários ao sistema."
-
-msgctxt "view:res.user.warning:"
-msgid "Warning"
-msgstr "Alerta"
-
-msgctxt "view:res.user.warning:"
-msgid "Warnings"
-msgstr "Alertas"
 
 msgctxt "view:res.user:"
 msgid "Access Permissions"
@@ -693,10 +769,6 @@ msgstr "Preferências"
 msgctxt "view:res.user:"
 msgid "User"
 msgstr "Usuário"
-
-msgctxt "view:res.user:"
-msgid "Users"
-msgstr "Usuários"
 
 msgctxt "wizard_button:res.user.config,start,end:"
 msgid "Cancel"

@@ -29,50 +29,30 @@ possible values.
 Some modules could request the usage of other sections for which the guideline
 asks them to be named like their module.
 
-jsonrpc
--------
+web
+---
 
-Defines the behavior of the JSON-RPC_ network interface.
+Defines the behavior of the web interface.
 
 listen
 ~~~~~~
 
-Defines a comma separated list of couples of host (or IP address) and port
-number separated by a colon to listen on.
+Defines the couple of host (or IP address) and port number separated by a colon
+to listen on.
 
 Default `localhost:8000`
 
 hostname
 ~~~~~~~~
 
-Defines the hostname for this network interface.
+Defines the hostname.
 
-data
+root
 ~~~~
 
-Defines the root path to retrieve data for `GET` requests.
+Defines the root path served by `GET` requests.
 
-Default: `/var/www/localhost/tryton`
-
-xmlrpc
-------
-
-Defines the behavior of the XML-RPC_ network interface.
-
-listen
-~~~~~~
-
-Same as for `jsonrpc` except it has no default value.
-
-webdav
-------
-
-Define the behavior of the WebDAV_ network interface.
-
-listen
-~~~~~~
-
-Same as for `jsonrpc` except it has no default value.
+Default: Under the `www` directory of user's home running `trytond`.
 
 database
 --------
@@ -115,7 +95,7 @@ path
 The directory where Tryton stores files and so the user running `trytond`
 must have write access on this directory.
 
-Default: `/var/lib/trytond/`
+Default: The `db` folder under the user home directory running `trytond`.
 
 list
 ~~~~
@@ -137,7 +117,7 @@ language
 The main language of the database that will be used for storage in the main
 table for translations.
 
-Default: `en_US`
+Default: `en`
 
 cache
 -----
@@ -221,6 +201,17 @@ Defines the default `From` address for emails sent by Tryton.
 session
 -------
 
+authentications
+~~~~~~~~~~~~~~~
+
+A comma separated list of login methods to use to authenticate the user.
+By default, Tryton supports only the `password` method which compare the
+password entered by the user against a stored hash. But other modules can
+define new methods (please refers to their documentation).
+The methods are tested following the order of the list.
+
+Default: `password`
+
 timeout
 ~~~~~~~
 
@@ -228,14 +219,36 @@ The time in seconds until a session expires.
 
 Default: `600`
 
-super_pwd
+max_attempt
+~~~~~~~~~~~
+
+The maximum authentication attempt before the server answers unconditionally
+`Too Many Requests` for any other attempts. The counting is done on all
+attempts over a period of `timeout`.
+
+Default: `5`
+
+password
+--------
+
+length
+~~~~~~
+
+The minimal length required for the user password.
+
+Default: `8`
+
+forbidden
 ~~~~~~~~~
 
-The server password used to authenticate from the client for database
-management tasks. It is encrypted using using the Unix `crypt(3)` routine.
-A password can be generated using this command line::
+The path to a file containing one forbidden password per line.
 
-    python -c 'import getpass,crypt,random,string; print crypt.crypt(getpass.getpass(), "".join(random.sample(string.ascii_letters + string.digits, 8)))'
+entropy
+~~~~~~~
+
+The ratio of non repeated characters for the user password.
+
+Default: `0.75`
 
 report
 ------
@@ -247,10 +260,27 @@ The parameters for `unoconv`.
 
 Default: `pipe,name=trytond;urp;StarOffice.ComponentContext`
 
+attachment
+----------
+
+Defines how to store the attachments
+
+filestore
+~~~~~~~~~
+
+A boolean value to store attachment in the :ref:`FileStore <ref-filestore>`.
+
+Default: `True`
+
+store_prefix
+~~~~~~~~~~~~
+
+The prefix to use with the `FileStore`.
+
+Default: `None`
 
 .. _JSON-RPC: http://en.wikipedia.org/wiki/JSON-RPC
 .. _XML-RPC: http://en.wikipedia.org/wiki/XML-RPC
-.. _WebDAV: http://en.wikipedia.org/wiki/WebDAV
 .. _RFC-3986: http://tools.ietf.org/html/rfc3986
 .. _SMTP-URL: http://tools.ietf.org/html/draft-earhart-url-smtp-00
 .. _SSL: http://en.wikipedia.org/wiki/Secure_Sockets_Layer

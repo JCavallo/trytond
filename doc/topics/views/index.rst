@@ -37,6 +37,10 @@ There is three types of views:
 
     * Graph
 
+    * Board
+
+    * Calendar
+
 Form view
 =========
 
@@ -55,7 +59,7 @@ Elements of the view are put on the screen following the rules:
 
     * Elements take one or more columns when they are put in the table. If
       there are not enough free columns on the current row, the elements are put
-      at the begining of the next row.
+      at the beginning of the next row.
 
 
 XML description
@@ -96,6 +100,15 @@ List of attributes shared by many form elements:
     .. _common-attributes-colspan:
 
     * ``colspan``: The number of columns the widget must take in the table.
+
+    .. _common-attributes-col:
+
+    * ``col``: The number of columns the container must have.
+
+      A negative value (or zero) will remove the constraint on the number of
+      columns.
+
+      The default value is 4.
 
     .. _common-attributes-states:
 
@@ -150,9 +163,6 @@ form
 
 Each form view must start with this tag.
 
-    * ``string``: The text that will be used as default title for the tab or
-      the window.
-
     .. _form-attributes-on_write:
 
     * ``on_write``: The name of a method on the Model of the view that will be
@@ -166,7 +176,7 @@ Each form view must start with this tag.
         The method must be registered in :attr:`trytond.model.Model.__rpc__`.
       ..
 
-    * ``col``: The number of columns for the view.
+    * ``col``: see in common-attributes-col_.
 
     * ``cursor``: The name of the field that must have the cursor by default.
 
@@ -223,8 +233,6 @@ Display a field of the object with the value of the current record.
 
     * ``readonly``: Boolean to set the field readonly.
 
-    * ``required``: Boolean to set the field required.
-
     * ``mode``: Only for One2Many fields: it is a comma separated list, that
       specifies the order of the view used to display the relation. (Example:
       ``tree,form``)
@@ -243,6 +251,9 @@ Display a field of the object with the value of the current record.
 
     * ``filename_visible``: Only for Binary fields, boolean that enables the
       display of the filename.
+
+    * ``toolbar``: Only for Rich Text widget, boolean that enables the
+      display of the Rich Text toolbar. The default value is 1.
 
     * ``yexpand``: see in common-attributes-yexpand_.
 
@@ -267,8 +278,8 @@ image
 
 Display an image.
 
-    * ``name``: the name of the image. It must be the name with the extension
-      of an image from ``tryton/share/pixmaps/``.
+    * ``name``: the name of the image. It must be the name of a record of
+      `ir.ui.icon`.
 
     * ``yexpand``: see in common-attributes-yexpand_.
 
@@ -353,6 +364,34 @@ Display a button.
 
     * ``help``: see in common-attributes-help_.
 
+The button can be used to display actions, relates...
+There are different ways to add an toolbar Action. This is the dynamic way.
+Instead the "keyword form" which is unchangeable.
+We use the buttons of a view.
+
+     * ``keywords`` :  This attribute determines where the button will be display.
+
+       There are five places:
+
+           * ``open`` : Open tree
+
+           * ``action`` : Action
+
+	   * ``print`` : Print form
+
+	   * ``email`` : Email
+
+	   * ``form_relate`` : Form relate
+
+If there is no attribute keyword, the default place is Action.
+
+Example:
+
+.. highlight:: xml
+::
+    <button name="button_name" string="button_string" keywords="action"/>
+    <button name="button_name" string="button_string" keywords="action,relate"/>
+
 notebook
 ^^^^^^^^
 
@@ -372,7 +411,7 @@ Define a new tab inside a notebook.
     * ``angle``: The angle in degrees between the baseline of the label and the
       horizontal, measured counterclockwise.
 
-    * ``col``: The number of columns for the page view.
+    * ``col``: see in common-attributes-col_.
 
     * ``id``: see in common-attributes-id_.
 
@@ -390,7 +429,7 @@ Create a sub-table in a cell.
 
     * ``rowspan``: The number of rows the group spans in the table.
 
-    * ``col``: The number of columns for the group contains.
+    * ``col``: see in common-attributes-col_.
 
     * ``homogeneous``: If True all the tables cells are the same size.
 
@@ -484,9 +523,6 @@ tree
 
 Each tree view must start with this tag.
 
-    * ``string``: The text that will be used as default title for the tab or
-      the window.
-
     * ``on_write``: see form-attributes-on_write_.
 
     * ``editable``: If it is set to ``top`` or ``bottom``, the list becomes
@@ -513,11 +549,11 @@ field
 
     * ``readonly``: Boolean to set the field readonly.
 
-    * ``required``: Boolean to set the field required.
-
     * ``widget``: The widget that must be used instead of the default one.
 
-    * ``tree_invisible``: Boolean to display or not the column.
+    * ``tree_invisible``: A string of :ref:`PYSON statement <topics-pyson>`
+      that will be evaluated as boolean with the context of the view to display
+      or not the column.
 
     * ``icon``: The name of the field that contains the name of the icon to
       display in the column.
@@ -566,7 +602,7 @@ Example
   <tree string="Taxes" sequence="sequence">
       <field name="name"/>
       <field name="percentage">
-          <suffix string="%"/>
+          <suffix name="percentage" string="%"/>
       </field>
       <field name="group"/>
       <field name="type"/>
@@ -607,8 +643,6 @@ graph
 Each graph view must start with this tag.
 
     * ``type``: ``vbar``, ``hbar``, ``line``, ``pie``
-
-    * ``string``: the name of the graph.
 
     * ``background``: an hexaecimal value for the color of the
       background.
@@ -702,10 +736,7 @@ board
 
 Each board view must start with this tag.
 
-    * ``string``: The text that will be used as default titla for the atb or
-      the window.
-
-    * ``col``: The number of columns for the view.
+    * ``col``: see in common-attributes-col_.
 
 image
 ^^^^^
@@ -780,8 +811,14 @@ Each calendar view must start with this tag.
 
     * ``dtend``: The name of the field that contains the end date.
 
-    * ``string``: The text that will be used as default title for the tab or
-      the window.
+    * ``mode``: An optional name for the view that will be used first.
+      Available views are: `week` and `month`. The default value is `month`.
+
+    * ``color``: An optional field name that contains the text color for the
+      event. The default value is `black`.
+
+    * ``background_color``: An optional field name that contains the background
+      color for the event. The default value is `lightblue`.
 
 field
 ^^^^^

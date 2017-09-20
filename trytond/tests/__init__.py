@@ -15,6 +15,7 @@ from .workflow import *
 from .copy_ import *
 from history import *
 from .field_context import *
+from . import multivalue
 
 
 def register():
@@ -74,6 +75,10 @@ def register():
         One2ManySizeTarget,
         One2ManySizePYSON,
         One2ManySizePYSONTarget,
+        One2ManyFilter,
+        One2ManyFilterTarget,
+        One2ManyFilterDomain,
+        One2ManyFilterDomainTarget,
         Many2Many,
         Many2ManyTarget,
         Many2ManyRelation,
@@ -86,10 +91,17 @@ def register():
         Many2ManySize,
         Many2ManySizeTarget,
         Many2ManySizeRelation,
+        Many2ManyTree,
+        Many2ManyTreeRelation,
+        Many2ManyFilter,
+        Many2ManyFilterTarget,
+        Many2ManyFilterRelation,
+        Many2ManyFilterDomain,
+        Many2ManyFilterDomainTarget,
+        Many2ManyFilterDomainRelation,
         Reference,
         ReferenceTarget,
         ReferenceRequired,
-        Property,
         Selection,
         SelectionRequired,
         DictSchema,
@@ -99,11 +111,19 @@ def register():
         Binary,
         BinaryDefault,
         BinaryRequired,
+        BinaryFileStorage,
+        Model,
+        ModelParent,
+        ModelChild,
+        ModelChildChild,
         Singleton,
         URLObject,
         ModelStorage,
+        ModelStorageRequired,
+        ModelStorageContext,
         ModelSQLRequiredField,
         ModelSQLTimestamp,
+        ModelSQLFieldSet,
         Model4Union1,
         Model4Union2,
         Model4Union3,
@@ -113,8 +133,11 @@ def register():
         Model4UnionTree1,
         Model4UnionTree2,
         UnionTree,
+        SequenceOrderedModel,
         ModelViewChangedValues,
         ModelViewChangedValuesTarget,
+        ModelViewButton,
+        ModelViewRPC,
         MPTT,
         ImportDataBoolean,
         ImportDataInteger,
@@ -160,14 +183,21 @@ def register():
         Many2OneDomainValidation,
         Many2OneOrderBy,
         Many2OneSearch,
+        Many2OneTree,
+        Many2OneMPTT,
+        Many2OneNoForeignKey,
+        Many2OneTargetStorage,
         TestHistory,
         TestHistoryLine,
         FieldContextChild,
         FieldContextParent,
+        NullOrder,
         module='tests', type_='model')
     Pool.register(
         TestWizard,
         module='tests', type_='wizard')
+
+    multivalue.register('tests')
 
 
 def suite():

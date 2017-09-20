@@ -1,15 +1,47 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
-from trytond.model import ModelSingleton, ModelSQL, UnionMixin, fields
+from trytond.model import (ModelSingleton, ModelSQL, UnionMixin, fields,
+    sequence_ordered)
+from trytond.transaction import Transaction
 
 __all__ = [
+    'Model',
+    'ModelParent', 'ModelChild', 'ModelChildChild',
     'Singleton', 'URLObject',
-    'ModelStorage',
-    'ModelSQLRequiredField', 'ModelSQLTimestamp',
+    'ModelStorage', 'ModelStorageRequired', 'ModelStorageContext',
+    'ModelSQLRequiredField', 'ModelSQLTimestamp', 'ModelSQLFieldSet',
     'Model4Union1', 'Model4Union2', 'Model4Union3', 'Model4Union4',
     'Union', 'UnionUnion',
     'Model4UnionTree1', 'Model4UnionTree2', 'UnionTree',
+    'SequenceOrderedModel',
+    'NullOrder',
     ]
+
+
+class Model(ModelSQL):
+    'Model'
+    __name__ = 'test.model'
+    name = fields.Char('Name')
+
+
+class ModelParent(Model):
+    "Model Parent"
+    __name__ = 'test.model_parent'
+    name = fields.Char("Name")
+
+
+class ModelChild(Model):
+    "Model Child"
+    __name__ = 'test.model_child'
+    name = fields.Char("Name")
+    parent = fields.Many2One('test.model_parent', "Parent")
+
+
+class ModelChildChild(Model):
+    "Model Child Child"
+    __name__ = 'test.model_child_child'
+    name = fields.Char("Name")
+    parent = fields.Many2One('test.model_child', "Parent")
 
 
 class Singleton(ModelSingleton, ModelSQL):
@@ -34,6 +66,21 @@ class ModelStorage(ModelSQL):
     name = fields.Char('Name')
 
 
+class ModelStorageRequired(ModelSQL):
+    'Model stored'
+    __name__ = 'test.modelstorage.required'
+    name = fields.Char('Name', required=True)
+
+
+class ModelStorageContext(ModelSQL):
+    'Model Storage to test Context'
+    __name__ = 'test.modelstorage.context'
+    context = fields.Function(fields.Binary('Context'), 'get_context')
+
+    def get_context(self, name):
+        return Transaction().context
+
+
 class ModelSQLRequiredField(ModelSQL):
     'model with a required field'
     __name__ = 'test.modelsql'
@@ -45,6 +92,21 @@ class ModelSQLRequiredField(ModelSQL):
 class ModelSQLTimestamp(ModelSQL):
     'Model to test timestamp'
     __name__ = 'test.modelsql.timestamp'
+
+
+class ModelSQLFieldSet(ModelSQL):
+    'Model to test field set'
+    __name__ = 'test.modelsql.field_set'
+
+    field = fields.Function(fields.Integer('Field'),
+        'get_field', setter='set_field')
+
+    def get_field(self, name=None):
+        return
+
+    @classmethod
+    def set_field(cls, records, name, value):
+        pass
 
 
 class Model4Union1(ModelSQL):
@@ -116,3 +178,14 @@ class UnionTree(UnionMixin, ModelSQL):
     @staticmethod
     def union_models():
         return ['test.model.union.tree1', 'test.model.union.tree2']
+
+
+class SequenceOrderedModel(sequence_ordered(), ModelSQL):
+    'Sequence Ordered Model'
+    __name__ = 'test.order.sequence'
+
+
+class NullOrder(ModelSQL):
+    "Null Order"
+    __name__ = 'test.null_order'
+    integer = fields.Integer('Integer')

@@ -3,7 +3,8 @@
 
 import datetime
 from decimal import Decimal
-from trytond.model import ModelSQL, DictSchemaMixin, fields, Unique
+from trytond.model import (
+    ModelSQL, ModelStorage, DictSchemaMixin, fields, Unique)
 from trytond.pyson import Eval
 
 __all__ = [
@@ -24,19 +25,25 @@ __all__ = [
     'One2ManyReference', 'One2ManyReferenceTarget',
     'One2ManySize', 'One2ManySizeTarget',
     'One2ManySizePYSON', 'One2ManySizePYSONTarget',
+    'One2ManyFilter', 'One2ManyFilterTarget',
+    'One2ManyFilterDomain', 'One2ManyFilterDomainTarget',
     'Many2Many', 'Many2ManyTarget', 'Many2ManyRelation',
     'Many2ManyRequired', 'Many2ManyRequiredTarget',
     'Many2ManyRequiredRelation',
     'Many2ManyReference', 'Many2ManyReferenceTarget',
     'Many2ManyReferenceRelation',
     'Many2ManySize', 'Many2ManySizeTarget', 'Many2ManySizeRelation',
+    'Many2ManyTree', 'Many2ManyTreeRelation',
+    'Many2ManyFilter', 'Many2ManyFilterTarget', 'Many2ManyFilterRelation',
+    'Many2ManyFilterDomain', 'Many2ManyFilterDomainTarget',
+    'Many2ManyFilterDomainRelation',
     'Reference', 'ReferenceTarget', 'ReferenceRequired',
-    'Property',
     'Selection', 'SelectionRequired',
     'DictSchema', 'Dict', 'DictDefault', 'DictRequired',
-    'Binary', 'BinaryDefault', 'BinaryRequired',
+    'Binary', 'BinaryDefault', 'BinaryRequired', 'BinaryFileStorage',
     'Many2OneDomainValidation', 'Many2OneTarget', 'Many2OneOrderBy',
-    'Many2OneSearch',
+    'Many2OneSearch', 'Many2OneTree', 'Many2OneMPTT', 'Many2OneNoForeignKey',
+    'Many2OneTargetStorage'
     ]
 
 
@@ -501,6 +508,39 @@ class One2ManySizePYSONTarget(ModelSQL):
     origin = fields.Many2One('test.one2many_size_pyson', 'Origin')
 
 
+class One2ManyFilter(ModelSQL):
+    'One2Many Filter Relation'
+    __name__ = 'test.one2many_filter'
+    targets = fields.One2Many('test.one2many_filter.target', 'origin',
+        'Targets')
+    filtered_targets = fields.One2Many('test.one2many_filter.target', 'origin',
+        'Filtered Targets', filter=[('value', '>', 2)])
+
+
+class One2ManyFilterTarget(ModelSQL):
+    'One2Many Filter Target'
+    __name__ = 'test.one2many_filter.target'
+    origin = fields.Many2One('test.one2many_filter', 'Origin')
+    value = fields.Integer('Value')
+
+
+class One2ManyFilterDomain(ModelSQL):
+    'One2Many Filter Relation'
+    __name__ = 'test.one2many_filter_domain'
+    targets = fields.One2Many('test.one2many_filter_domain.target', 'origin',
+        'Targets', domain=[('value', '<', 10)])
+    filtered_targets = fields.One2Many('test.one2many_filter_domain.target',
+        'origin', 'Filtered Targets', domain=[('value', '<', 10)],
+        filter=[('value', '>', 2)])
+
+
+class One2ManyFilterDomainTarget(ModelSQL):
+    'One2Many Filter Domain Target'
+    __name__ = 'test.one2many_filter_domain.target'
+    origin = fields.Many2One('test.one2many_filter_domain', 'Origin')
+    value = fields.Integer('Value')
+
+
 class Many2Many(ModelSQL):
     'Many2Many'
     __name__ = 'test.many2many'
@@ -588,6 +628,71 @@ class Many2ManySizeRelation(ModelSQL):
     target = fields.Many2One('test.many2many_size.target', 'Target')
 
 
+class Many2ManyTree(ModelSQL):
+    'Many2Many Tree'
+    __name__ = 'test.many2many_tree'
+    parents = fields.Many2Many('test.many2many_tree.relation',
+        'child', 'parent', 'Parents')
+    children = fields.Many2Many('test.many2many_tree.relation',
+        'parent', 'child', 'Children')
+
+
+class Many2ManyTreeRelation(ModelSQL):
+    'Many2Many Tree Relation'
+    __name__ = 'test.many2many_tree.relation'
+    parent = fields.Many2One('test.many2many_tree', 'Parent')
+    child = fields.Many2One('test.many2many_tree', 'Child')
+
+
+class Many2ManyFilter(ModelSQL):
+    'Many2Many Filter Relation'
+    __name__ = 'test.many2many_filter'
+    targets = fields.Many2Many('test.many2many_filter.relation', 'origin',
+        'target', 'Targets')
+    filtered_targets = fields.Many2Many('test.many2many_filter.relation',
+        'origin', 'target', 'Targets',
+        filter=[('value', '>', 2)])
+    or_filtered_targets = fields.Many2Many('test.many2many_filter.relation',
+        'origin', 'target', 'Targets',
+        filter=['OR', ('value', '>', 2), ('value', '<', 0)])
+
+
+class Many2ManyFilterTarget(ModelSQL):
+    'Many2Many Filter Target'
+    __name__ = 'test.many2many_filter.target'
+    value = fields.Integer('Value')
+
+
+class Many2ManyFilterRelation(ModelSQL):
+    'Many2Many Filter Relation'
+    __name__ = 'test.many2many_filter.relation'
+    origin = fields.Many2One('test.many2many_filter', 'Origin')
+    target = fields.Many2One('test.many2many_filter.target', 'Target')
+
+
+class Many2ManyFilterDomain(ModelSQL):
+    'Many2Many Filter Domain Relation'
+    __name__ = 'test.many2many_filter_domain'
+    targets = fields.Many2Many('test.many2many_filter_domain.relation',
+        'origin', 'target', 'Targets', domain=[('value', '<', 10)])
+    filtered_targets = fields.Many2Many(
+        'test.many2many_filter_domain.relation', 'origin', 'target', 'Targets',
+        domain=[('value', '<', 10)], filter=[('value', '>', 2)])
+
+
+class Many2ManyFilterDomainTarget(ModelSQL):
+    'Many2Many Filter Domain Target'
+    __name__ = 'test.many2many_filter_domain.target'
+    value = fields.Integer('Value')
+
+
+class Many2ManyFilterDomainRelation(ModelSQL):
+    'Many2Many Filter Domain Relation'
+    __name__ = 'test.many2many_filter_domain.relation'
+    origin = fields.Many2One('test.many2many_filter_domain', 'Origin')
+    target = fields.Many2One('test.many2many_filter.target', 'Target')
+
+
 class Reference(ModelSQL):
     'Reference'
     __name__ = 'test.reference'
@@ -614,20 +719,6 @@ class ReferenceRequired(ModelSQL):
             ], required=True)
 
 
-class Property(ModelSQL):
-    'Property'
-    __name__ = 'test.property'
-    char = fields.Property(fields.Char('Test Char'))
-    many2one = fields.Property(fields.Many2One('test.char',
-            'Test Many2One'))
-    numeric = fields.Property(fields.Numeric('Test Numeric'))
-    selection = fields.Property(fields.Selection([
-                (None, ''),
-                ('option_a', 'Option A'),
-                ('option_b', 'Option B')
-            ], 'Test Selection'))
-
-
 class Selection(ModelSQL):
     'Selection'
     __name__ = 'test.selection'
@@ -637,8 +728,11 @@ class Selection(ModelSQL):
     select_string = select.translated('select')
     dyn_select = fields.Selection('get_selection',
         'Instance Dynamic Selection')
+    dyn_select_string = dyn_select.translated('dyn_select')
     dyn_select_static = fields.Selection('static_selection',
         'Static Selection')
+    dyn_select_static_string = dyn_select_static.translated(
+        'dyn_select_static')
 
     @fields.depends('select')
     def get_selection(self):
@@ -710,6 +804,13 @@ class BinaryRequired(ModelSQL):
     binary = fields.Binary('Binary Required', required=True)
 
 
+class BinaryFileStorage(ModelSQL):
+    "Binary in FileStorage"
+    __name__ = 'test.binary_filestorage'
+    binary = fields.Binary('Binary', file_id='binary_id')
+    binary_id = fields.Char('Binary ID')
+
+
 class Many2OneTarget(ModelSQL):
     "Many2One Domain Validation Target"
     __name__ = 'test.many2one_target'
@@ -744,3 +845,37 @@ class Many2OneSearch(ModelSQL):
     "Many2One Search"
     __name__ = 'test.many2one_search'
     many2one = fields.Many2One('test.many2one_target', 'many2one')
+
+
+class Many2OneTree(ModelSQL):
+    'Many2One Tree'
+    __name__ = 'test.many2one_tree'
+    many2one = fields.Many2One('test.many2one_tree', 'many2one')
+
+
+class Many2OneMPTT(ModelSQL):
+    'Many2One MPTT'
+    __name__ = 'test.many2one_mptt'
+    many2one = fields.Many2One('test.many2one_mptt', 'many2one',
+        left='left', right='right')
+    left = fields.Integer('Left', required=True)
+    right = fields.Integer('Right', required=True)
+
+    @classmethod
+    def default_left(cls):
+        return 0
+
+    @classmethod
+    def default_right(cls):
+        return 0
+
+
+class Many2OneNoForeignKey(ModelSQL):
+    "Many2One No Foreign Key"
+    __name__ = 'test.many2one_no_foreign_key'
+    many2one = fields.Many2One('test.many2one_target_storage', 'many2one')
+
+
+class Many2OneTargetStorage(ModelStorage):
+    "Many2One Target Storage"
+    __name__ = 'test.many2one_target_storage'

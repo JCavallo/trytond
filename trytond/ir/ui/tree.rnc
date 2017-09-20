@@ -4,14 +4,9 @@ tree = element tree { attlist.tree,
     (field
      | button)*
   }
-attlist.tree &=
-  [ a:defaultValue = "Unknown" ] attribute string { text }?
 attlist.tree &= attribute on_write { text }?
 attlist.tree &= attribute editable { "top" | "bottom" }?
-attlist.tree &= attribute always_expand { "0" | "1" }?
-attlist.tree &= attribute editable_open { "0" | "1" }?
 attlist.tree &= attribute sequence { text }?
-attlist.tree &= attribute colors { text }?
 attlist.tree &=
   [ a:defaultValue = "0" ] attribute keyword_open { "0" | "1" }?
 attlist.tree &=
@@ -46,7 +41,7 @@ attlist.field &=
     | "image"
   }?
 attlist.field &=
-  [ a:defaultValue = "0" ] attribute tree_invisible { "0" | "1" }?
+  [ a:defaultValue = "0" ] attribute tree_invisible { text }?
 attlist.field &=
   [ a:defaultValue = "0" ] attribute expand { "0" | "1" }?
 attlist.field &= attribute icon { text }?
@@ -65,10 +60,11 @@ attlist.field &= [a:defaultValue = "1"] attribute completion { "0" | "1" }?
 attlist.field &= attribute string { text }?
 attlist.field &= [a:defaultValue = "1"] attribute factor { text }?
 attlist.field &= attribute filename { text }?
+attlist.field &= attribute view_ids { text }?
 prefix = element prefix { attlist.affix, empty }
 suffix = element suffix { attlist.affix, empty }
 attlist.affix &= attribute string { text }?
-attlist.affix &= attribute name { text }?
+attlist.affix &= ( attribute name { text } | attribute id { text } )
 attlist.affix &= attribute icon { text }?
 button = element button { attlist.button, empty }
 attlist.button &= attribute help { text }?
@@ -80,8 +76,8 @@ attlist.button &= attribute states { text }?
 attlist.button &= attribute change { text }?
 attlist.button &= attribute type { "class" | "instance" }?
 attlist.button &=
-  [ a:defaultValue = "0" ] attribute tree_invisible { "0" | "1" }?
-data = element data { attlist.data, xpath+ }
+  [ a:defaultValue = "0" ] attribute tree_invisible { text }?
+data = element data { attlist.data, xpath* }
 attlist.data &= empty
 xpath = element xpath { attlist.xpath,
     (field

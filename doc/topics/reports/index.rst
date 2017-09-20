@@ -23,20 +23,6 @@ document, ``*.odt``, that displays the full name and the address lines of the
 first address of each party. The genshi code is placed in the template using
 ``Functions->Placeholder->Text`` Fields. These are specific to ODT files.
 
-.. highlight:: genshi
-
-::
-
-  <for each="party in objects">
-    <party.full_name>
-    <if test="party.addresses">
-      <for each="line in party.addresses[0].full_address.split('\n')">
-        <line>
-      </for>
-    </if>
-  </for>
-
-
 Report API
 ==========
 
@@ -101,10 +87,8 @@ steps:
 
     * Set the zoom to 100% (View>Zoom)
 
-    * Set the document in read-only mode
-
- (``Tools>Options>OpenOffice.org>Security``) (Decreases the time it takes to
- open the document.)
+    * Set the document in read-only mode (``File>Properties>Security``)
+      (Decreases the time it takes to open the document.)
 
  - Usage
 
@@ -178,34 +162,44 @@ Replacing existing Tryton reports
 To replace an existing report you must deactivate the old report and activate
 the new report.
 
-For example to deactivate the invoice report:
+For example to deactivate the sale report:
 
 .. highlight:: xml
 
 ::
 
-  <record model="ir.action.report" id="account_invoice.report_invoice">
+  <record model="ir.action.report" id="sale.report_sale">
     <field name="active" eval="False"/>
   </record>
 
-Then you must activate the new invoice report that exists in your new module:
+Then you must activate the new sale report that exists in your new module:
 
 .. highlight:: xml
 
 ::
 
-  <record model="ir.action.report" id="report_invoice_new">
-    <field name="name">Invoice</field>
-    <field name="report_name">account.invoice</field>
-    <field name="model">account.invoice</field>
-    <field name="report">my_module/invoice.odt</field>
+  <record model="ir.action.report" id="report_sale">
+    <field name="name">Sale</field>
+    <field name="report_name">sale.sale</field>
+    <field name="model">sale.sale</field>
+    <field name="report">my_module/sale.odt</field>
     <field name="template_extension">odt</field>
+  </record>
+
+And create the keyword for the new report:
+
+.. highlight:: xml
+
+::
+
+  <record model="ir.action.keyword" id="report_sale_keyword">
+      <field name="keyword">form_print</field>
+      <field name="model">sale.sale,-1</field>
+      <field name="action" ref="report_sale"/>
   </record>
 
 Passing custom data to a report
 -------------------------------
-
-TODO: Examples of overriding Report.execute.
 
 In this example `Report.get_context` is overridden and an employee
 object is set into context.  Now the invoice report will be able to access the
@@ -237,8 +231,8 @@ employee object.
 
 .. _Genshi XML Templates: http://genshi.edgewall.org/wiki/Documentation/0.5.x/xml-templates.html
 
-.. _Quick Example: http://code.google.com/p/python-relatorio/wiki/QuickExample
+.. _Quick Example: https://relatorio.readthedocs.io/en/latest/quickexample.html
 
-.. _In Depth Introduction: http://code.google.com/p/python-relatorio/wiki/IndepthIntroduction
+.. _In Depth Introduction: https://relatorio.readthedocs.io/en/latest/indepthexample.html
 
-.. _Example Documents: http://code.google.com/p/python-relatorio/source/browse/#hg%2Fexamples
+.. _Example Documents: http://hg.tryton.org/relatorio/file/default/examples

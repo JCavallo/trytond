@@ -6,14 +6,10 @@ import time
 import csv
 import warnings
 import logging
-try:
-    import cStringIO as StringIO
-except ImportError:
-    import StringIO
 
 from decimal import Decimal
 from itertools import islice, ifilter, chain, izip
-from functools import reduce
+from functools import reduce, wraps
 from operator import itemgetter
 from collections import defaultdict
 
@@ -26,13 +22,21 @@ from trytond.const import OPERATORS
 from trytond.config import config
 from trytond.transaction import Transaction
 from trytond.pool import Pool
-from trytond.cache import LRUDict, freeze
+from trytond.cache import LRUDict, LRUDictTransaction, freeze
 from trytond import backend
 from trytond.rpc import RPC
 from .modelview import ModelView
 from .descriptors import dualmethod
 
 __all__ = ['ModelStorage', 'EvalEnvironment']
+
+
+def without_check_access(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with Transaction().set_context(_check_access=False):
+            return func(*args, **kwargs)
+    return wrapper
 
 
 def cache_size():
@@ -101,6 +105,7 @@ class ModelStorage(Model):
         Transaction().counter += 1
 
     @classmethod
+    @without_check_access
     def trigger_create(cls, records):
         '''
         Trigger create actions
@@ -171,8 +176,8 @@ class ModelStorage(Model):
             if local_cache:
                 local_cache.clear()
 
-        # Clean cursor cache
-        for cache in Transaction().cursor.cache.itervalues():
+        # Clean transaction cache
+        for cache in Transaction().cache.itervalues():
             if cls.__name__ in cache:
                 for record in all_records:
                     if record.id in cache[cls.__name__]:
@@ -196,6 +201,7 @@ class ModelStorage(Model):
         return eligibles
 
     @classmethod
+    @without_check_access
     def trigger_write(cls, eligibles):
         '''
         Trigger write actions.
@@ -225,8 +231,8 @@ class ModelStorage(Model):
         # Increase transaction counter
         Transaction().counter += 1
 
-        # Clean cursor cache
-        for cache in Transaction().cursor.cache.values():
+        # Clean transaction cache
+        for cache in Transaction().cache.values():
             for cache in (cache, cache.get('_language_cache', {}).values()):
                 if cls.__name__ in cache:
                     for record in records:
@@ -234,6 +240,7 @@ class ModelStorage(Model):
                             del cache[cls.__name__][record.id]
 
     @classmethod
+    @without_check_access
     def trigger_delete(cls, records):
         '''
         Trigger delete actions
@@ -280,8 +287,8 @@ class ModelStorage(Model):
                 if field_name in default:
                     data[field_name] = default[field_name]
                 elif (isinstance(cls._fields[field_name], fields.Function)
-                        and not isinstance(cls._fields[field_name],
-                            fields.Property)):
+                        and not isinstance(
+                            cls._fields[field_name], fields.MultiValue)):
                     del data[field_name]
                 elif ftype in ('many2one', 'one2one'):
                     try:
@@ -309,7 +316,7 @@ class ModelStorage(Model):
                 mptt.add(field.right)
         fields_names = [n for n, f in cls._fields.iteritems()
             if (not isinstance(f, fields.Function)
-                or isinstance(f, fields.Property))
+                or isinstance(f, fields.MultiValue))
             and n not in mptt]
         ids = map(int, records)
         datas = cls.read(ids, fields_names=fields_names)
@@ -360,7 +367,7 @@ class ModelStorage(Model):
         '''
         Return the number of records that match the domain.
         '''
-        res = cls.search(domain, count=True)
+        res = cls.search(domain, order=[], count=True)
         if isinstance(res, list):
             return len(res)
         return res
@@ -455,9 +462,14 @@ class ModelStorage(Model):
         '''
         Return a list of instance for the ids
         '''
+        transaction = Transaction()
         ids = map(int, ids)
-        local_cache = LRUDict(cache_size())
-        return [cls(int(x), _ids=ids, _local_cache=local_cache) for x in ids]
+        local_cache = LRUDictTransaction(cache_size())
+        transaction_cache = transaction.get_cache()
+        return [cls(x, _ids=ids,
+                _local_cache=local_cache,
+                _transaction_cache=transaction_cache,
+                _transaction=transaction) for x in ids]
 
     @staticmethod
     def __export_row(record, fields_names):
@@ -570,7 +582,7 @@ class ModelStorage(Model):
                 return None
             res = []
             Relation = pool.get(relation)
-            for word in csv.reader(StringIO.StringIO(value), delimiter=',',
+            for word in csv.reader(value.splitlines(), delimiter=',',
                     quoting=csv.QUOTE_NONE, escapechar='\\').next():
                 res2 = Relation.search([
                     ('rec_name', '=', word),
@@ -619,7 +631,7 @@ class ModelStorage(Model):
             relation = None
             ftype = fields_def[field[-1][:-3]]['type']
             if ftype == 'many2many':
-                value = csv.reader(StringIO.StringIO(value), delimiter=',',
+                value = csv.reader(value.splitlines(), delimiter=',',
                         quoting=csv.QUOTE_NONE, escapechar='\\').next()
             elif ftype == 'reference':
                 try:
@@ -786,7 +798,7 @@ class ModelStorage(Model):
             if values is None:
                 return False
             for model_data in models_data:
-                if not model_data.values:
+                if not model_data.values or model_data.noupdate:
                     continue
                 xml_values = ModelData.load_values(model_data.values)
                 for key, val in values.iteritems():
@@ -984,6 +996,10 @@ class ModelStorage(Model):
                     if (isinstance(value, (type(None), type(False), list,
                                     tuple, basestring, dict))
                             and not value):
+                        # JCA : Add log to help debugging
+                        logging.getLogger().debug(
+                            'Field %s of %s is required' %
+                            (field_name, cls.__name__))
                         cls.raise_user_error('required_validation_record',
                             error_args=cls._get_error_args(field_name))
                 # validate states required
@@ -1039,7 +1055,9 @@ class ModelStorage(Model):
                         error_args['value'] = repr(value)
                         cls.raise_user_error('digits_validation_record',
                             error_args=error_args)
-                    if value is None:
+                    if (value is None
+                            or not digits
+                            or any(d is None for d in digits)):
                         return
                     if isinstance(value, Decimal):
                         if (value.quantize(Decimal(str(10.0 ** -digits[1])))
@@ -1049,7 +1067,7 @@ class ModelStorage(Model):
                         if not (round(value, digits[1]) == float(value)):
                             raise_user_error(value)
                 # validate digits
-                if hasattr(field, 'digits') and field.digits:
+                if getattr(field, 'digits', None):
                     if is_pyson(field.digits):
                         pyson_digits = PYSONEncoder().encode(field.digits)
                         for record in records:
@@ -1140,6 +1158,8 @@ class ModelStorage(Model):
         pool = Pool()
         vals = {}
         for field in defaults.keys():
+            if '.' in field:  # skip all related fields
+                continue
             fld_def = cls._fields[field]
             if fld_def._type in ('many2one', 'one2one'):
                 if isinstance(defaults[field], (list, tuple)):
@@ -1163,9 +1183,13 @@ class ModelStorage(Model):
     def __init__(self, id=None, **kwargs):
         _ids = kwargs.pop('_ids', None)
         _local_cache = kwargs.pop('_local_cache', None)
-        self._cursor = Transaction().cursor
-        self._user = Transaction().user
-        self._context = Transaction().context
+        _transaction_cache = kwargs.pop('_transaction_cache', None)
+        transaction = kwargs.pop('_transaction', None)
+        if transaction is None:
+            transaction = Transaction()
+        self._transaction = transaction
+        self._user = transaction.user
+        self._context = transaction.context
         if id is not None:
             id = int(id)
         if _ids is not None:
@@ -1174,19 +1198,22 @@ class ModelStorage(Model):
         else:
             self._ids = [id]
 
-        self._cursor_cache = self._cursor.get_cache()
+        if _transaction_cache is not None:
+            self._transaction_cache = _transaction_cache
+        else:
+            self._transaction_cache = transaction.get_cache()
 
         if _local_cache is not None:
+            assert isinstance(_local_cache, LRUDictTransaction)
             self._local_cache = _local_cache
         else:
-            self._local_cache = LRUDict(cache_size())
-        self._local_cache.counter = Transaction().counter
+            self._local_cache = LRUDictTransaction(cache_size())
 
         super(ModelStorage, self).__init__(id, **kwargs)
 
     @property
     def _cache(self):
-        cache = self._cursor_cache
+        cache = self._transaction_cache
         if self.__name__ not in cache:
             cache[self.__name__] = LRUDict(cache_size())
         return cache[self.__name__]
@@ -1195,13 +1222,10 @@ class ModelStorage(Model):
         try:
             return super(ModelStorage, self).__getattr__(name)
         except AttributeError:
-            if self.id < 0:
+            if self.id is None or self.id < 0:
                 raise
 
-        counter = Transaction().counter
-        if self._local_cache.counter != counter:
-            self._local_cache.clear()
-            self._local_cache.counter = counter
+        self._local_cache.refresh()
 
         # fetch the definition of the field
         try:
@@ -1283,7 +1307,8 @@ class ModelStorage(Model):
         index = self._ids.index(self.id)
         ids = chain(islice(self._ids, index, None),
             islice(self._ids, 0, max(index - 1, 0)))
-        ids = islice(unique(ifilter(filter_, ids)), self._cursor.IN_MAX)
+        ids = islice(unique(ifilter(filter_, ids)),
+            self._transaction.database.IN_MAX)
 
         def instantiate(field, value, data):
             if field._type in ('many2one', 'one2one', 'reference'):
@@ -1297,13 +1322,17 @@ class ModelStorage(Model):
                     model_name, record_id = value.split(',')
                     Model = Pool().get(model_name)
                     try:
-                        value = int(record_id)
+                        record_id = int(record_id)
                     except ValueError:
                         return value
+                    if record_id < 0:
+                        return value
+                    value = record_id
                 else:
                     Model = field.get_target()
             except KeyError:
                 return value
+            transaction = Transaction()
             ctx = {}
             if field.context:
                 pyson_context = PYSONEncoder().encode(field.context)
@@ -1312,30 +1341,34 @@ class ModelStorage(Model):
             if getattr(field, 'datetime_field', None):
                 datetime_ = data.get(field.datetime_field)
                 ctx = {'_datetime': datetime_}
-            with Transaction().set_context(**ctx):
+            with transaction.set_context(**ctx):
+                kwargs = {}
                 key = (Model, freeze(ctx))
-                local_cache = model2cache.setdefault(key,
-                    LRUDict(cache_size()))
-                ids = model2ids.setdefault(key, [])
+                kwargs['_local_cache'] = model2cache.setdefault(key,
+                    LRUDictTransaction(cache_size()))
+                kwargs['_ids'] = ids = model2ids.setdefault(key, [])
+                kwargs['_transaction_cache'] = transaction.get_cache()
+                kwargs['_transaction'] = transaction
                 if field._type in ('many2one', 'one2one', 'reference'):
+                    value = int(value)
                     ids.append(value)
-                    return Model(value, _ids=ids, _local_cache=local_cache)
+                    return Model(value, **kwargs)
                 elif field._type in ('one2many', 'many2many'):
-                    ids.extend(value)
-                    return tuple(Model(id, _ids=ids, _local_cache=local_cache)
-                        for id in value)
+                    ids.extend(int(x) for x in value)
+                    return tuple(Model(id, **kwargs) for id in value)
 
         model2ids = {}
         model2cache = {}
         # Read the data
-        with Transaction().set_cursor(self._cursor), \
-                Transaction().set_user(self._user), \
-                Transaction().set_context(self._context):
+        with Transaction().set_current_transaction(self._transaction), \
+                self._transaction.set_user(self._user), \
+                self._transaction.reset_context(), \
+                self._transaction.set_context(self._context):
             if self.id in self._cache and name in self._cache[self.id]:
                 # Use values from cache
                 ids = islice(chain(islice(self._ids, index, None),
                         islice(self._ids, 0, max(index - 1, 0))),
-                    self._cursor.IN_MAX)
+                    self._transaction.database.IN_MAX)
                 ffields = {name: ffields[name]}
                 read_data = [{'id': i, name: self._cache[i][name]}
                     for i in ids
@@ -1379,7 +1412,8 @@ class ModelStorage(Model):
                 continue
             if field._type in ('many2one', 'one2one', 'reference'):
                 if value:
-                    if value.id < 0 and field._type != 'reference':
+                    if ((value.id is None or value.id < 0)
+                            and field._type != 'reference'):
                         value.save()
                     if field._type == 'reference':
                         value = str(value)
@@ -1387,7 +1421,7 @@ class ModelStorage(Model):
                         value = value.id
             if field._type in ('one2many', 'many2many'):
                 targets = value
-                if self.id >= 0:
+                if self.id is not None and self.id >= 0:
                     _values, self._values = self._values, None
                     try:
                         to_remove = [t.id for t in getattr(self, fname)]
@@ -1399,10 +1433,12 @@ class ModelStorage(Model):
                 to_create = []
                 to_write = []
                 for target in targets:
-                    if target.id < 0:
+                    if target.id is None or target.id < 0:
                         if field._type == 'one2many':
                             # Don't store old target link
-                            setattr(target, field.field, None)
+                            if field.field:
+                                # JCA : Ignore if Function field
+                                setattr(target, field.field, None)
                         to_create.append(target._save_values)
                     else:
                         if target.id in to_remove:
@@ -1427,46 +1463,50 @@ class ModelStorage(Model):
 
     @dualmethod
     def save(cls, records):
-        if not records:
-            return
-        values = {}
-        save_values = {}
-        to_create = []
-        to_write = []
-        cursor = records[0]._cursor
-        user = records[0]._user
-        context = records[0]._context
-        for record in records:
-            assert cursor == record._cursor
-            assert user == record._user
-            assert context == record._context
-            save_values[id(record)] = record._save_values
-            values[id(record)] = record._values
-            record._values = None
-            if record.id is None or record.id < 0:
-                to_create.append(record)
-            elif save_values[id(record)]:
-                to_write.append(record)
-        transaction = Transaction()
-        try:
-            with transaction.set_cursor(cursor), \
-                    transaction.set_user(user), \
-                    transaction.set_context(context):
-                if to_create:
-                    news = cls.create([save_values[id(r)] for r in to_create])
-                    for record, new in izip(to_create, news):
-                        record._ids.remove(record.id)
-                        record.id = new.id
-                        record._ids.append(record.id)
-                if to_write:
-                    cls.write(*sum(
-                            (([r], save_values[id(r)]) for r in to_write), ()))
-        except:
+        while records:
+            latter = []
+            values = {}
+            save_values = {}
+            to_create = []
+            to_write = []
+            transaction = records[0]._transaction
+            user = records[0]._user
+            context = records[0]._context
             for record in records:
-                record._values = values[id(record)]
-            raise
-        for record in records:
-            record._init_values = None
+                if (record._transaction != transaction
+                        or user != record._user
+                        or context != record._context):
+                    latter.append(record)
+                    continue
+                save_values[id(record)] = record._save_values
+                values[id(record)] = record._values
+                record._values = None
+                if record.id is None or record.id < 0:
+                    to_create.append(record)
+                elif save_values[id(record)]:
+                    to_write.append(record)
+            transaction = Transaction()
+            try:
+                with transaction.set_current_transaction(transaction), \
+                        transaction.set_user(user), \
+                        transaction.reset_context(), \
+                        transaction.set_context(context):
+                    if to_create:
+                        news = cls.create([save_values[id(r)] for r in to_create])
+                        for record, new in izip(to_create, news):
+                            record._ids.remove(record.id)
+                            record._id = new.id
+                            record._ids.append(record.id)
+                    if to_write:
+                        cls.write(*sum(
+                                (([r], save_values[id(r)]) for r in to_write), ()))
+            except:
+                for record in to_create + to_write:
+                    record._values = values[id(record)]
+                raise
+            for record in to_create + to_write:
+                record._init_values = None
+            records = latter
 
 
 class EvalEnvironment(dict):

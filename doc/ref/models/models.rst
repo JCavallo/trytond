@@ -82,6 +82,8 @@ Class methods:
     ``fields_names``. Default values are defined by the returned value of each
     instance method with the pattern ``default_`field_name`()``.
     ``with_rec_name`` allow to add `rec_name` value for each many2one field.
+    The `default_rec_name` key in the context can be used to define the value
+    of the :attr:`Model._rec_name` field.
 
 .. classmethod:: Model.fields_get([fields_names])
 
@@ -122,7 +124,7 @@ Static methods:
 
 .. staticmethod:: ModelView.button
 
-    Decorate button method to check group access.
+    Decorate button method to check group access and rule.
 
 .. staticmethod:: ModelView.button_action(action)
 
@@ -163,10 +165,6 @@ Class methods:
         - `print`: a list of available reports
         - `action`: a list of available actions
         - `relate`: a list of available relations
-
-.. classmethod:: ModelView.view_header_get(value[, view_type])
-
-    Returns the window title used by the client for the specific view type.
 
 .. classmethod:: ModelView.view_attributes()
 
@@ -380,7 +378,9 @@ Class attributes are:
 
     where the first element of the tuple is a field name of the model and the
     second is the sort ordering as `ASC` for ascending or `DESC` for
-    descending.
+    descending. This second element may contain 'NULLS FIRST' or 'NULLS LAST'
+    to sort null values before or after non-null values. If neither is
+    specified the default behavior of the backend is used.
 
     In case the field used for the first element is a :class:`fields.Many2One`,
     it is also possible to use the dotted notation to sort on a specific field
@@ -647,9 +647,10 @@ record is equal or not defined.
 
 Instance methods:
 
-.. method:: MatchMixin.match(pattern)
+.. method:: MatchMixin.match(pattern[, match_none])
 
-    Return if the instance match the pattern
+    Return if the instance match the pattern. If `match_none` is set `None`
+    value of the instance will be compared.
 
 ==========
 UnionMixin
@@ -685,6 +686,72 @@ Class methods:
 
     Return the SQL table and columns to use for the UNION for the model name.
 
+================
+sequence_ordered
+================
+
+.. method:: sequence_ordered([field_name, [field_label, [order]]])
+
+Retuns a mixin_ class which defines the order of a :class:`ModelSQL` with an
+:class:`trytond.model.fields.Integer` field. field_name indicates the name of
+the field to be created and its default values is `sequence`. field_label
+defines the label which will be used by the field and defaults to `Sequence`.
+Order specifies the order direction and defaults to `ASC NULLS FIRST`.
+
+===============
+MultiValueMixin
+===============
+
+.. class:: MultiValueMixin
+
+A mixin_ for :class:`Model` to help having
+:class:`trytond.model.fields.MultiValue` fields with multi-values on a
+:class:`ValueMixin`. The values are stored by creating one record per pattern.
+The patterns are the same as those on :class:`MatchMixin`.
+
+Class methods:
+
+.. classmethod:: MultiValueMixin.multivalue_model(field)
+
+    Return the :class:`ValueMixin` on which the values are stored for the
+    field name. The default is class name suffixed by the field name.
+
+.. classmethod:: MultiValueMixin.setter_multivalue(records, name, value, \*\*pattern)
+
+    The setter method for the :class:`trytond.model.fields.Function` fields.
+
+Instance methods:
+
+.. method:: MultiValueMixin.multivalue_records(field)
+
+    Return the list of all :class:`ValueMixin` records linked to the instance.
+    By default, it returns the value of the first found
+    :class:`trytond.model.fields.One2Many` linked to the multivalue model or
+    all the records of this one.
+
+.. method:: MultiValueMixin.multivalue_record(field, \*\*pattern)
+
+    Return a new record of :class:`ValueMixin` linked to the instance.
+
+.. method:: MultiValueMixin.get_multivalue(name, \*\*pattern)
+
+    Return the value of the field `name` for the pattern.
+
+.. method:: MultiValueMixin.set_multivalue(name, value, \*\*pattern)
+
+    Store the value of the field `name` for the pattern.
+
+.. warning::
+    To customize the pattern, both methods must be override the same way.
+..
+
+==========
+ValueMixin
+==========
+
+.. class:: ValueMixin
+
+A mixin_ to store the values of :class:`MultiValueMixin`.
 
 .. _mixin: http://en.wikipedia.org/wiki/Mixin
 .. _JSON: http://en.wikipedia.org/wiki/Json

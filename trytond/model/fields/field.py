@@ -1,17 +1,23 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
-from collections import namedtuple
 import warnings
 from functools import wraps
 
-from sql import operators, Column, Literal, Select, CombiningQuery, Null
+from sql import (operators, Column, Literal, Select, CombiningQuery, Null,
+    Query, Expression)
 from sql.conditionals import Coalesce, NullIf
 from sql.operators import Concat
 
+from trytond import backend
 from trytond.pyson import PYSON, PYSONEncoder, Eval
 from trytond.const import OPERATORS
 from trytond.transaction import Transaction
 from trytond.pool import Pool
+from trytond.cache import LRUDictTransaction
+
+from ...rpc import RPC
+
+Database = backend.get('Database')
 
 
 def domain_validate(value):
@@ -64,6 +70,21 @@ def size_validate(value):
                 'size must return integer'
 
 
+def _set_value(record, field):
+    try:
+        field, nested = field.split('.', 1)
+    except ValueError:
+        nested = None
+    if field.startswith('_parent_'):
+        field = field[8:]  # Strip '_parent_'
+    if not hasattr(record, field):
+        setattr(record, field, None)
+    elif nested:
+        parent = getattr(record, field)
+        if parent:
+            _set_value(parent, nested)
+
+
 def depends(*fields, **kwargs):
     methods = kwargs.pop('methods', None)
     assert not kwargs
@@ -81,11 +102,7 @@ def depends(*fields, **kwargs):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
             for field in fields:
-                field = field.split('.')[0]
-                if field.startswith('_parent_'):
-                    field = field[8:]  # Strip '_parent_'
-                if not hasattr(self, field):
-                    setattr(self, field, None)
+                _set_value(self, field)
             return func(self, *args, **kwargs)
         return wrapper
     return decorator
@@ -110,6 +127,36 @@ def get_eval_fields(value):
     return encoder.fields
 
 
+def instanciate_values(Target, value):
+    from ..modelstorage import ModelStorage, cache_size
+    kwargs = {}
+    ids = []
+    if issubclass(Target, ModelStorage):
+        kwargs['_local_cache'] = LRUDictTransaction(cache_size())
+        kwargs['_ids'] = ids
+
+    def instance(data):
+        if isinstance(data, Target):
+            return data
+        elif isinstance(data, dict):
+            if data.get('id', -1) >= 0:
+                values = {}
+                values.update(data)
+                values.update(kwargs)
+                ids.append(data['id'])
+            else:
+                values = data
+            return Target(**values)
+        else:
+            ids.append(data)
+            return Target(data, **kwargs)
+    return tuple(instance(x) for x in (value or []))
+
+
+def on_change_result(record):
+    return record._changed_values
+
+
 SQL_OPERATORS = {
     '=': operators.Equal,
     '!=': operators.NotEqual,
@@ -128,6 +175,7 @@ SQL_OPERATORS = {
 
 class Field(object):
     _type = None
+    _sql_type = None
 
     def __init__(self, string='', help='', required=False, readonly=False,
             domain=None, states=None, select=False, on_change=None,
@@ -229,6 +277,8 @@ class Field(object):
         if inst is None:
             return self
         assert self.name is not None
+        if self.name == 'id':
+            return inst._id
         return inst.__getattr__(self.name)
 
     def __set__(self, inst, value):
@@ -237,12 +287,17 @@ class Field(object):
             inst._values = {}
         inst._values[self.name] = value
 
-    @staticmethod
-    def sql_format(value):
-        return value
+    def sql_format(self, value):
+        if isinstance(value, (Query, Expression)):
+            return value
+
+        assert self._sql_type is not None
+        database = Transaction().database
+        return database.sql_format(self._sql_type, value)
 
     def sql_type(self):
-        raise NotImplementedError
+        database = Transaction().database
+        return database.sql_type(self._sql_type)
 
     def sql_column(self, table):
         return Column(table, self.name)
@@ -292,6 +347,19 @@ class Field(object):
             return method(tables)
         else:
             return [self.sql_column(table)]
+
+    def set_rpc(self, model):
+        for attribute, result in (
+                ('on_change', on_change_result),
+                ('on_change_with', None),
+                ):
+            if not getattr(self, attribute):
+                continue
+            func_name = '%s_%s' % (attribute, self.name)
+            assert hasattr(model, func_name), \
+                'Missing %s on model %s' % (func_name, model.__name__)
+            model.__rpc__.setdefault(
+                func_name, RPC(instantiate=0, result=result))
 
 
 class FieldTranslate(Field):
@@ -390,5 +458,3 @@ class FieldTranslate(Field):
 
         return [Coalesce(NullIf(translation.value, ''),
                 self.sql_column(table))]
-
-SQLType = namedtuple('SQLType', 'base type')

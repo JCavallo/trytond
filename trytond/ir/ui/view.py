@@ -3,20 +3,17 @@
 import os
 import sys
 import logging
-try:
-    import simplejson as json
-except ImportError:
-    import json
+import json
 
 from lxml import etree
 from trytond.model import ModelView, ModelSQL, fields
 from trytond import backend
-from trytond.pyson import Eval, Bool, PYSONDecoder
+from trytond.pyson import Eval, Bool, PYSONDecoder, If
 from trytond.tools import file_open
 from trytond.transaction import Transaction
 from trytond.wizard import Wizard, StateView, Button
 from trytond.pool import Pool
-from trytond.cache import _Cache as Cache
+from trytond.cache import MemoryCache
 from trytond.rpc import RPC
 
 __all__ = [
@@ -42,7 +39,13 @@ class View(ModelSQL, ModelView):
             ('graph', 'Graph'),
             ('calendar', 'Calendar'),
             ('board', 'Board'),
-            ], 'View Type', select=True)
+            ], 'View Type', select=True,
+        domain=[
+            If(Bool(Eval('inherit')),
+                ('type', '=', None),
+                ('type', '!=', None)),
+            ],
+        depends=['inherit'])
     data = fields.Text('Data')
     name = fields.Char('Name', states={
             'invisible': ~(Eval('module') & Eval('name')),
@@ -61,7 +64,8 @@ class View(ModelSQL, ModelView):
     domain = fields.Char('Domain', states={
             'invisible': ~Eval('inherit'),
             }, depends=['inherit'])
-    _get_rng_cache = Cache('ir_ui_view.get_rng')
+    # AKE : Force usage of MemoryCache for non serializable data
+    _get_rng_cache = MemoryCache('ir_ui_view.get_rng')
 
     @classmethod
     def __setup__(cls):
@@ -79,8 +83,7 @@ class View(ModelSQL, ModelView):
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.4 arch moved into data
         if table.column_exist('arch'):
@@ -89,7 +92,7 @@ class View(ModelSQL, ModelView):
         super(View, cls).__register__(module_name)
 
         # New instance to refresh definition
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 1.0 arch no more required
         table.not_null_action('arch', action='remove')
@@ -113,14 +116,23 @@ class View(ModelSQL, ModelView):
     @classmethod
     def get_rng(cls, type_):
         key = (cls.__name__, type_)
-        rng = cls._get_rng_cache.get(key)
+        rng = cls._get_rng_cache.get(key, None)
         if rng is None:
-            rng_name = os.path.join(os.path.dirname(
-                    unicode(__file__, sys.getfilesystemencoding())),
-                type_ + '.rng')
-            rng = etree.fromstring(open(rng_name).read())
+            if sys.version_info < (3,):
+                filename = __file__.decode(sys.getfilesystemencoding())
+            else:
+                filename = __file__
+            rng_name = os.path.join(os.path.dirname(filename), type_ + '.rng')
+            with open(rng_name, 'rb') as fp:
+                rng = etree.fromstring(fp.read())
             cls._get_rng_cache.set(key, rng)
         return rng
+
+    @property
+    def rng_type(self):
+        if self.inherit:
+            return self.inherit.rng_type
+        return self.type
 
     @classmethod
     def validate(cls, views):
@@ -138,19 +150,24 @@ class View(ModelSQL, ModelView):
                 continue
             try:
                 tree = etree.fromstring(xml)
-            except etree.XMLSyntaxError:
-                print xml
+            except Exception:
+                # JCA : print faulty xml
+                try:
+                    import pprint
+                    pprint.pprint(xml)
+                except:
+                    print(xml)
                 raise
 
             if hasattr(etree, 'RelaxNG'):
-                rng_type = view.inherit.type if view.inherit else view.type
-                validator = etree.RelaxNG(etree=cls.get_rng(rng_type))
+                validator = etree.RelaxNG(etree=cls.get_rng(view.rng_type))
                 if not validator.validate(tree):
-                    error_log = reduce(lambda x, y: str(x) + '\n' + str(y),
-                            validator.error_log.filter_from_errors())
-                    logger.error('Invalid xml view:\n%s',
-                        str(error_log) + '\n' + xml)
-                    cls.raise_user_error('invalid_xml', (view.rec_name,))
+                    error_log = '\n'.join(map(str,
+                            validator.error_log.filter_from_errors()))
+                    logger.error('Invalid XML view %s:\n%s\n%s',
+                        view.rec_name, error_log, xml)
+                    cls.raise_user_error(
+                        'invalid_xml', (view.rec_name,), error_log)
             root_element = tree.getroottree().getroot()
 
             # validate pyson attributes
@@ -160,29 +177,31 @@ class View(ModelSQL, ModelView):
 
             def encode(element):
                 for attr in ('states', 'domain', 'spell', 'colors'):
-                    if element.get(attr):
-                        try:
-                            value = PYSONDecoder().decode(element.get(attr))
-                            validates.get(attr, lambda a: True)(value)
-                        except Exception, e:
-                            logger.error('Invalid pyson view element "%s:%s":'
-                                '\n%s\n%s',
-                                element.get('id') or element.get('name'), attr,
-                                str(e), xml)
-                            return False
+                    if not element.get(attr):
+                        continue
+                    try:
+                        value = PYSONDecoder().decode(element.get(attr))
+                        validates.get(attr, lambda a: True)(value)
+                    except Exception, e:
+                        error_log = '%s: <%s %s="%s"/>' % (
+                            e, element.get('id') or element.get('name'), attr,
+                            element.get(attr))
+                        logger.error(
+                            'Invalid XML view %s:\n%s\n%s',
+                            view.rec_name, error_log, xml)
+                        cls.raise_user_error(
+                            'invalid_xml', (view.rec_name,), error_log)
                 for child in element:
-                    if not encode(child):
-                        return False
-                return True
-            if not encode(root_element):
-                cls.raise_user_error('invalid_xml', (view.rec_name,))
+                    encode(child)
+            encode(root_element)
 
     def get_arch(self, name):
         value = None
         if self.name and self.module:
             path = os.path.join(self.module, 'view', self.name + '.xml')
             try:
-                with file_open(path, subdir='modules') as fp:
+                with file_open(path,
+                        subdir='modules', mode='r', encoding='utf-8') as fp:
                     value = fp.read()
             except IOError:
                 pass
@@ -231,7 +250,10 @@ class ShowView(Wizard):
         def get_view(self, wizard, state_name):
             pool = Pool()
             View = pool.get('ir.ui.view')
-            view = View(Transaction().context.get('active_id'))
+            view_id = Transaction().context.get('active_id')
+            if not view_id:
+                return {}
+            view = View(view_id)
             Model = pool.get(view.model)
             return Model.fields_view_get(view_id=view.id)
 
@@ -324,16 +346,14 @@ class ViewTreeState(ModelSQL, ModelView):
     @classmethod
     def __register__(cls, module_name):
         TableHandler = backend.get('TableHandler')
-        cursor = Transaction().cursor
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
 
         # Migration from 2.8: table name changed
-        table.table_rename(cursor, 'ir_ui_view_tree_expanded_state',
-            cls._table)
+        table.table_rename('ir_ui_view_tree_expanded_state', cls._table)
 
         super(ViewTreeState, cls).__register__(module_name)
 
-        table = TableHandler(cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
         table.index_action(['model', 'domain', 'user', 'child_name'], 'add')
 
     @staticmethod
@@ -347,7 +367,7 @@ class ViewTreeState(ModelSQL, ModelView):
     @classmethod
     def set(cls, model, domain, child_name, nodes, selected_nodes):
         # Normalize the json domain
-        domain = json.dumps(json.loads(domain))
+        domain = json.dumps(json.loads(domain), separators=(',', ':'))
         current_user = Transaction().user
         records = cls.search([
                 ('user', '=', current_user),
@@ -368,7 +388,7 @@ class ViewTreeState(ModelSQL, ModelView):
     @classmethod
     def get(cls, model, domain, child_name):
         # Normalize the json domain
-        domain = json.dumps(json.loads(domain))
+        domain = json.dumps(json.loads(domain), separators=(',', ':'))
         current_user = Transaction().user
         try:
             expanded_info, = cls.search([

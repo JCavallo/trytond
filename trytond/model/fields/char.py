@@ -1,11 +1,10 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
+import sys
 import warnings
 
-from sql import Query, Expression
-
-from ... import backend
-from .field import Field, FieldTranslate, size_validate, SQLType
+from .field import Field, FieldTranslate, size_validate
+from ...rpc import RPC
 
 
 class Char(FieldTranslate):
@@ -47,21 +46,22 @@ class Char(FieldTranslate):
 
     size = property(_get_size, _set_size)
 
-    @staticmethod
-    def sql_format(value):
-        if isinstance(value, (Query, Expression)):
-            return value
+    def sql_format(self, value):
         if value is None:
             return None
-        elif isinstance(value, str):
+        elif isinstance(value, str) and sys.version_info < (3,):
             return unicode(value, 'utf-8')
         assert isinstance(value, unicode)
         return value
 
-    def sql_type(self):
-        db_type = backend.name()
-        if self.size and db_type != 'sqlite':
-            return SQLType('VARCHAR', 'VARCHAR(%s)' % self.size)
-        elif db_type == 'mysql':
-            return SQLType('CHAR', 'VARCHAR(255)')
-        return SQLType('VARCHAR', 'VARCHAR')
+    @property
+    def _sql_type(self):
+        return 'VARCHAR(%s)' % self.size if self.size else 'VARCHAR'
+
+    def set_rpc(self, model):
+        super(Char, self).set_rpc(model)
+        if self.autocomplete:
+            func_name = 'autocomplete_%s' % self.name
+            assert hasattr(model, func_name), \
+                'Missing %s on model %s' % (func_name, model.__name__)
+            model.__rpc__.setdefault(func_name, RPC(instantiate=0))

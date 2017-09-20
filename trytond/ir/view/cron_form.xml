@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!-- This file is part of Tryton.  The COPYRIGHT file at the top level of
 this repository contains the full copyright notices and license terms. -->
-<form string="Scheduled Action">
+<form>
     <label name="name"/>
     <field name="name"/>
     <label name="active"/>
@@ -20,6 +20,7 @@ this repository contains the full copyright notices and license terms. -->
     <field name="next_call"/>
     <label name="repeat_missed"/>
     <field name="repeat_missed"/>
+    <button name="run_once" colspan="2" string="Run Once"/>
     <separator string="Action to trigger" colspan="4"
         id="action_trigger"/>
     <label name="model"/>

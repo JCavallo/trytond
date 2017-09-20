@@ -7,6 +7,30 @@ msgid "The name of the group must be unique!"
 msgstr "Egy csoport neve csak egyszer adható ki"
 
 msgctxt "error:res.user:"
+msgid "The password can not be the same as user email."
+msgstr ""
+
+msgctxt "error:res.user:"
+msgid "The password can not be the same as user login."
+msgstr ""
+
+msgctxt "error:res.user:"
+msgid "The password can not be the same as user name."
+msgstr ""
+
+msgctxt "error:res.user:"
+msgid "The password contains too much times the same characters."
+msgstr ""
+
+msgctxt "error:res.user:"
+msgid "The password is forbidden."
+msgstr ""
+
+msgctxt "error:res.user:"
+msgid "The password is too short."
+msgstr ""
+
+msgctxt "error:res.user:"
 msgid ""
 "Users can not be deleted for logging purpose.\n"
 "Instead you must inactivate them."
@@ -87,6 +111,16 @@ msgstr "Utolsó módosítás dátuma"
 msgctxt "field:ir.model.button-res.group,write_uid:"
 msgid "Write User"
 msgstr "Által módosítva"
+
+#, fuzzy
+msgctxt "field:ir.model.button.click,user:"
+msgid "User"
+msgstr "Felhasználó"
+
+#, fuzzy
+msgctxt "field:ir.model.button.rule,group:"
+msgid "Group"
+msgstr "Csoport"
 
 msgctxt "field:ir.model.field-res.group,create_date:"
 msgid "Create Date"
@@ -260,6 +294,11 @@ msgctxt "field:ir.ui.menu-res.group,write_uid:"
 msgid "Write User"
 msgstr "Által módosítva"
 
+#, fuzzy
+msgctxt "field:res.group,buttons:"
+msgid "Buttons"
+msgstr "Gomb"
+
 msgctxt "field:res.group,create_date:"
 msgid "Create Date"
 msgstr "Létrehozás dátuma"
@@ -315,6 +354,10 @@ msgstr "Műveletek"
 msgctxt "field:res.user,active:"
 msgid "Active"
 msgstr "Aktív"
+
+msgctxt "field:res.user,applications:"
+msgid "Applications"
+msgstr ""
 
 msgctxt "field:res.user,create_date:"
 msgid "Create Date"
@@ -464,6 +507,53 @@ msgctxt "field:res.user-res.group,write_uid:"
 msgid "Write User"
 msgstr "Által módosítva"
 
+msgctxt "field:res.user.application,application:"
+msgid "Application"
+msgstr ""
+
+#, fuzzy
+msgctxt "field:res.user.application,create_date:"
+msgid "Create Date"
+msgstr "Létrehozás dátuma"
+
+#, fuzzy
+msgctxt "field:res.user.application,create_uid:"
+msgid "Create User"
+msgstr "Által létrehozva"
+
+#, fuzzy
+msgctxt "field:res.user.application,id:"
+msgid "ID"
+msgstr "ID"
+
+msgctxt "field:res.user.application,key:"
+msgid "Key"
+msgstr ""
+
+#, fuzzy
+msgctxt "field:res.user.application,rec_name:"
+msgid "Name"
+msgstr "Név"
+
+msgctxt "field:res.user.application,state:"
+msgid "State"
+msgstr ""
+
+#, fuzzy
+msgctxt "field:res.user.application,user:"
+msgid "User"
+msgstr "Felhasználó"
+
+#, fuzzy
+msgctxt "field:res.user.application,write_date:"
+msgid "Write Date"
+msgstr "Utolsó mdosítás dátuma"
+
+#, fuzzy
+msgctxt "field:res.user.application,write_uid:"
+msgid "Write User"
+msgstr "Által módosítva"
+
 msgctxt "field:res.user.config.start,id:"
 msgid "ID"
 msgstr "ID"
@@ -608,14 +698,6 @@ msgctxt "model:res.user,name:"
 msgid "User"
 msgstr "Felhasználó"
 
-msgctxt "model:res.user,name:user_admin"
-msgid "Administrator"
-msgstr "Adminisztrátor"
-
-msgctxt "model:res.user,name:user_trigger"
-msgid "Cron Trigger"
-msgstr "Időterv Tigger"
-
 msgctxt "model:res.user-ir.action,name:"
 msgid "User - Action"
 msgstr "Felhasználói művelet"
@@ -623,6 +705,10 @@ msgstr "Felhasználói művelet"
 msgctxt "model:res.user-res.group,name:"
 msgid "User - Group"
 msgstr "Felhasználócsoport"
+
+msgctxt "model:res.user.application,name:"
+msgid "User Application"
+msgstr ""
 
 msgctxt "model:res.user.config.start,name:"
 msgid "User Config Init"
@@ -636,24 +722,33 @@ msgctxt "model:res.user.warning,name:"
 msgid "User Warning"
 msgstr "Felhasználó figyelmeztetés"
 
+msgctxt "selection:res.user.application,state:"
+msgid "Cancelled"
+msgstr ""
+
+msgctxt "selection:res.user.application,state:"
+msgid "Requested"
+msgstr ""
+
+msgctxt "selection:res.user.application,state:"
+msgid "Validated"
+msgstr ""
+
 msgctxt "view:res.group:"
 msgid "Access Permissions"
-msgstr ""
-
-msgctxt "view:res.group:"
-msgid "Group"
-msgstr ""
-
-msgctxt "view:res.group:"
-msgid "Groups"
 msgstr ""
 
 msgctxt "view:res.group:"
 msgid "Members"
 msgstr ""
 
-msgctxt "view:res.user.config.start:"
-msgid "Add Users"
+#, fuzzy
+msgctxt "view:res.user.application:"
+msgid "Cancel"
+msgstr "Mégse"
+
+msgctxt "view:res.user.application:"
+msgid "Validate"
 msgstr ""
 
 msgctxt "view:res.user.config.start:"
@@ -664,21 +759,13 @@ msgctxt "view:res.user.config.start:"
 msgid "You can now add some users into the system."
 msgstr ""
 
-msgctxt "view:res.user.warning:"
-msgid "Warning"
-msgstr ""
-
-msgctxt "view:res.user.warning:"
-msgid "Warnings"
-msgstr ""
-
 msgctxt "view:res.user:"
 msgid "Access Permissions"
 msgstr ""
 
 msgctxt "view:res.user:"
 msgid "Actions"
-msgstr ""
+msgstr "Műveletek"
 
 msgctxt "view:res.user:"
 msgid "Group Membership"
@@ -690,11 +777,7 @@ msgstr ""
 
 msgctxt "view:res.user:"
 msgid "User"
-msgstr ""
-
-msgctxt "view:res.user:"
-msgid "Users"
-msgstr ""
+msgstr "Felhasználó"
 
 msgctxt "wizard_button:res.user.config,start,end:"
 msgid "Cancel"

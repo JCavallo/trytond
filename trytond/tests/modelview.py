@@ -8,6 +8,8 @@ from trytond.model import ModelView, fields
 __all__ = [
     'ModelViewChangedValues',
     'ModelViewChangedValuesTarget',
+    'ModelViewButton',
+    'ModelViewRPC',
     ]
 
 
@@ -30,3 +32,77 @@ class ModelViewChangedValuesTarget(ModelView):
     __name__ = 'test.modelview.changed_values.target'
     name = fields.Char('Name')
     parent = fields.Many2One('test.modelview.changed_values', 'Parent')
+
+
+class ModelViewButton(ModelView):
+    'ModelView Button'
+    __name__ = 'test.modelview.button'
+    value = fields.Integer("Value")
+
+    @classmethod
+    def __setup__(cls):
+        super(ModelViewButton, cls).__setup__()
+        cls._buttons = {
+            'test': {},
+            }
+
+    @classmethod
+    @ModelView.button
+    def test(cls, records):
+        cls.test_non_decorated(records)
+
+    @classmethod
+    def test_non_decorated(cls, records):
+        pass
+
+
+class ModelViewRPC(ModelView):
+    'ModelView RPC'
+    __name__ = 'test.modelview.rpc'
+
+    selection = fields.Selection([('a', 'A')], 'Selection')
+    computed_selection = fields.Selection(
+        'get_selection', 'Computed Selection')
+    function_selection = fields.Function(
+        fields.Selection('get_function_selection', 'Function Selection'),
+        'function_selection_getter')
+
+    reference = fields.Reference('Reference', selection=[('a', 'A')])
+    computed_reference = fields.Reference(
+        'Computed reference', selection='get_reference')
+    function_reference = fields.Function(
+        fields.Reference('Function Reference',
+            selection='get_function_reference'),
+        'function_reference_getter')
+
+    integer = fields.Integer('Integer')
+    float = fields.Float('Float')
+    char = fields.Char('Char')
+
+    @fields.depends('selection')
+    def on_change_with_integer(self):
+        pass
+
+    @fields.depends('reference')
+    def on_change_float(self):
+        pass
+
+    @fields.depends('integer')
+    def autocomplete_char(self):
+        pass
+
+    @classmethod
+    def get_selection(cls):
+        pass
+
+    @classmethod
+    def get_function_selection(cls):
+        pass
+
+    @classmethod
+    def get_reference(cls):
+        pass
+
+    @classmethod
+    def get_function_reference(cls):
+        pass

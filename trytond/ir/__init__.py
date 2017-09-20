@@ -7,7 +7,6 @@ from .sequence import *
 from .ui.menu import *
 from .ui.view import *
 from .ui.icon import *
-from .property import *
 from .action import *
 from .model import *
 from .attachment import *
@@ -45,7 +44,6 @@ def register():
         ViewTreeState,
         ViewSearch,
         Icon,
-        Property,
         Action,
         ActionKeyword,
         ActionReport,
@@ -59,6 +57,9 @@ def register():
         ModelAccess,
         ModelFieldAccess,
         ModelButton,
+        ModelButtonRule,
+        ModelButtonClick,
+        ModelButtonReset,
         ModelData,
         PrintModelGraphStart,
         Attachment,
@@ -76,8 +77,8 @@ def register():
         ModuleConfigWizardFirst,
         ModuleConfigWizardOther,
         ModuleConfigWizardDone,
-        ModuleInstallUpgradeStart,
-        ModuleInstallUpgradeDone,
+        ModuleActivateUpgradeStart,
+        ModuleActivateUpgradeDone,
         PrintModuleGraphParameters,
         Cache,
         Date,
@@ -91,14 +92,15 @@ def register():
         TranslationClean,
         TranslationUpdate,
         TranslationExport,
+        TranslationReport,
         ShowView,
         PrintModelGraph,
         PrintModuleGraph,
         ModuleConfigWizard,
-        ModuleInstallUpgrade,
+        ModuleActivateUpgrade,
         ModuleConfig,
         module='ir', type_='wizard')
     Pool.register(
         ModelGraph,
-        ModuleGraph,
+        ModelWorkflowGraph,
         module='ir', type_='report')

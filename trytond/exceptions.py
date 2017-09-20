@@ -2,7 +2,11 @@
 # this repository contains the full copyright notices and license terms.
 
 
-class UserError(Exception):
+class TrytonException(Exception):
+    pass
+
+
+class UserError(TrytonException):
 
     def __init__(self, message, description=''):
         super(UserError, self).__init__('UserError', (message, description))
@@ -10,8 +14,11 @@ class UserError(Exception):
         self.description = description
         self.code = 1
 
+    def __str__(self):
+        return '%s - %s' % (self.message, self.description)
 
-class UserWarning(Exception):
+
+class UserWarning(TrytonException):
 
     def __init__(self, name, message, description=''):
         super(UserWarning, self).__init__('UserWarning', (name, message,
@@ -21,18 +28,35 @@ class UserWarning(Exception):
         self.description = description
         self.code = 2
 
+    def __str__(self):
+        return '%s - %s' % (self.message, self.description)
 
-class NotLogged(Exception):
 
-    def __init__(self):
-        super(NotLogged, self).__init__('NotLogged')
+class LoginException(TrytonException):
+    """Request the named parameter for the login process.
+    The type can be 'password' or 'char'.
+    """
+
+    def __init__(self, name, message, type='password'):
+        super(LoginException, self).__init__(
+            'LoginException', (name, message, type))
+        self.name = name
+        self.message = message
+        self.type = type
         self.code = 3
 
 
-class ConcurrencyException(Exception):
+class ConcurrencyException(TrytonException):
 
     def __init__(self, message):
         super(ConcurrencyException, self).__init__('ConcurrencyException',
             message)
         self.message = message
         self.code = 4
+
+    def __str__(self):
+        return self.message
+
+
+class RateLimitException(TrytonException):
+    """User has sent too many requests in a given amount of time."""

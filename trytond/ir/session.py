@@ -1,16 +1,12 @@
 # This file is part of Tryton.  The COPYRIGHT file at the top level of
 # this repository contains the full copyright notices and license terms.
-try:
-    import simplejson as json
-except ImportError:
-    import json
+import json
 import uuid
 import datetime
 
 from trytond.model import ModelSQL, fields
 from trytond.config import config
 from .. import backend
-from ..transaction import Transaction
 
 __all__ = [
     'Session', 'SessionWizard',
@@ -34,7 +30,7 @@ class Session(ModelSQL):
         TableHandler = backend.get('TableHandler')
         super(Session, cls).__register__(module_name)
 
-        table = TableHandler(Transaction().cursor, cls, module_name)
+        table = TableHandler(cls, module_name)
         table.index_action('create_uid', 'add')
 
     @staticmethod

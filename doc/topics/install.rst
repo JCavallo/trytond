@@ -8,21 +8,21 @@ Prerequisites
 =============
 
     * Python 2.7 or later (http://www.python.org/)
+    * Werkzeug (http://werkzeug.pocoo.org/)
+    * wrapt (https://github.com/GrahamDumpleton/wrapt)
     * lxml 2.0 or later (http://lxml.de/)
     * relatorio 0.2.0 or later (http://code.google.com/p/python-relatorio/)
     * Genshi (http://genshi.edgewall.org/)
     * python-dateutil (http://labix.org/python-dateutil)
     * polib (https://bitbucket.org/izi/polib/wiki/Home)
-    * python-sql 0.2 or later (http://code.google.com/p/python-sql/)
-    * Optional: psycopg 2 or later (http://www.initd.org/)
+    * python-sql 0.4 or later (http://code.google.com/p/python-sql/)
+    * Optional: psycopg 2.5.0 or later (http://www.initd.org/)
     * Optional: psycopg2cffi 2.5.0 or later
       (http://github.com/chtd/psycopg2cffi)
     * Optional: MySQL-python (http://sourceforge.net/projects/mysql-python/)
-    * Optional: pywebdav 0.9.8 or later (http://code.google.com/p/pywebdav/)
     * Optional: pydot (http://code.google.com/p/pydot/)
     * Optional: unoconv http://dag.wieers.com/home-made/unoconv/)
     * Optional: sphinx (http://sphinx.pocoo.org/)
-    * Optional: simplejson (http://undefined.org/python/#simplejson)
     * Optional: cdecimal (http://www.bytereef.org/mpdecimal/index.html)
     * Optional: python-Levenshtein
       (http://github.com/miohtama/python-Levenshtein)
@@ -45,7 +45,7 @@ There are three easy options to install Tryton:
       For advanced options, please refer to the easy_install and/or the
       distutils documentation:
 
-          * http://peak.telecommunity.com/DevCenter/EasyInstall
+          * http://setuptools.readthedocs.io/en/latest/easy_install.html
           * http://docs.python.org/inst/inst.html
 
     * Without installation, just run ``bin/trytond`` from where the archive was

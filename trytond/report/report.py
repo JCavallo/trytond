@@ -2,6 +2,7 @@
 # this repository contains the full copyright notices and license terms.
 import os
 import datetime
+import logging
 import tempfile
 import warnings
 import subprocess
@@ -19,17 +20,24 @@ from trytond.transaction import Transaction
 from trytond.url import URLMixin
 from trytond.rpc import RPC
 from trytond.exceptions import UserError
+from trytond.tools import get_parent_language
 
 MIMETYPES = {
     'odt': 'application/vnd.oasis.opendocument.text',
     'odp': 'application/vnd.oasis.opendocument.presentation',
     'ods': 'application/vnd.oasis.opendocument.spreadsheet',
     'odg': 'application/vnd.oasis.opendocument.graphics',
+    'plain': 'text/plain',
+    'xml': 'text/xml',
+    'html': 'text/html',
+    'xhtml': 'text/xhtml',
     }
 FORMAT2EXT = {
     'doc6': 'doc',
     'doc95': 'doc',
     'docbook': 'xml',
+    'docx7': 'docx',
+    'docx': 'docx',
     'ooxml': 'xml',
     'latex': 'ltx',
     'sdc4': 'sdc',
@@ -44,6 +52,7 @@ FORMAT2EXT = {
     'xhtml': 'html',
     'xls5': 'xls',
     'xls95': 'xls',
+    'xlsx': 'xlsx',
     }
 
 
@@ -67,18 +76,22 @@ class TranslateFactory:
 
     def __call__(self, text):
         if self.language not in self.cache:
-            self.cache[self.language] = {}
-            translations = self.translation.search([
-                ('lang', '=', self.language),
-                ('type', '=', 'odt'),
-                ('name', '=', self.report_name),
-                ('value', '!=', ''),
-                ('value', '!=', None),
-                ('fuzzy', '=', False),
-                ('res_id', '=', -1),
-                ])
-            for translation in translations:
-                self.cache[self.language][translation.src] = translation.value
+            cache = self.cache[self.language] = {}
+            code = self.language
+            while code:
+                # Order to get empty module/custom report first
+                translations = self.translation.search([
+                    ('lang', '=', code),
+                    ('type', '=', 'report'),
+                    ('name', '=', self.report_name),
+                    ('value', '!=', ''),
+                    ('value', '!=', None),
+                    ('fuzzy', '=', False),
+                    ('res_id', '=', -1),
+                    ], order=[('module', 'DESC')])
+                for translation in translations:
+                    cache.setdefault(translation.src, translation.value)
+                code = get_parent_language(code)
         return self.cache[self.language].get(text, text)
 
     def set_language(self, language):
@@ -141,7 +154,8 @@ class Report(URLMixin, PoolBase):
         report_context = cls.get_context(records, data)
         oext, content = cls.convert(action_report,
             cls.render(action_report, report_context))
-        content = bytearray(content) if bytes == str else bytes(content)
+        if not isinstance(content, unicode):
+            content = bytearray(content) if bytes == str else bytes(content)
         return (oext, content, action_report.direct_print, action_report.name)
 
     @classmethod
@@ -246,12 +260,18 @@ class Report(URLMixin, PoolBase):
         oext = FORMAT2EXT.get(output_format, output_format)
         with os.fdopen(fd, 'wb+') as fp:
             fp.write(data)
-        cmd = ['unoconv', '--connection=%s' % config.get('report', 'unoconv'),
-            '-f', oext, '--stdout', path]
+        cmd = ['unoconv', '--no-launch', '--connection=%s' % config.get(
+                'report', 'unoconv'), '-f', oext, '--stdout', path]
+        logger = logging.getLogger(__name__)
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+            # JCA : Pipe stderr
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, close_fds=True)
             stdoutdata, stderrdata = proc.communicate()
-            if proc.wait() != 0:
+            # JCA : Use error code rather than wait twice
+            if proc.returncode != 0:
+                logger.info('unoconv.stdout : ' + stdoutdata)
+                logger.error('unoconv.stderr : ' + stderrdata)
                 raise Exception(stderrdata)
             return oext, stdoutdata
         finally:

@@ -1,8 +1,11 @@
+# This file is part of Tryton.  The COPYRIGHT file at the top level of
+# this repository contains the full copyright notices and license terms.
 from sql.conditionals import Coalesce
 
 from ..model import ModelSQL, ModelView, fields
 from ..pool import Pool
 from ..transaction import Transaction
+from ..pyson import Eval
 
 __all__ = ['ResourceMixin']
 
@@ -11,9 +14,15 @@ class ResourceMixin(ModelSQL, ModelView):
 
     resource = fields.Reference('Resource', selection='get_models',
         required=True, select=True)
-    last_user = fields.Function(fields.Char('Last User'),
+    last_user = fields.Function(fields.Char('Last User',
+            states={
+                'invisible': ~Eval('last_user'),
+                }),
         'get_last_user')
-    last_modification = fields.Function(fields.DateTime('Last Modification'),
+    last_modification = fields.Function(fields.DateTime('Last Modification',
+            states={
+                'invisible': ~Eval('last_modification'),
+                }),
         'get_last_modification')
 
     @classmethod
@@ -58,7 +67,7 @@ class ResourceMixin(ModelSQL, ModelView):
         with Transaction().set_context(_check_access=False):
             for record in cls.browse(ids):
                 if record.resource:
-                    model_names.add(record.resource.__name__)
+                    model_names.add(str(record.resource).split(',')[0])
         for model_name in model_names:
             ModelAccess.check(model_name, mode=mode)
 
@@ -87,18 +96,3 @@ class ResourceMixin(ModelSQL, ModelView):
         records = super(ResourceMixin, cls).create(vlist)
         cls.check_access([r.id for r in records], mode='create')
         return records
-
-    @classmethod
-    def view_header_get(cls, value, view_type='form'):
-        pool = Pool()
-        Model = pool.get('ir.model')
-        value = super(ResourceMixin, cls).view_header_get(
-            value, view_type=view_type)
-        resource = Transaction().context.get('resource')
-        if resource:
-            model_name, record_id = resource.split(',', 1)
-            model, = Model.search([('model', '=', model_name)])
-            Resource = pool.get(model_name)
-            record = Resource(int(record_id))
-            value = '%s - %s - %s' % (model.name, record.rec_name, value)
-        return value
