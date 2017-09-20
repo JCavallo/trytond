@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<form string="Parameters">
+<form>
   <label name="trim_links"/>
   <field name="trim_links" colspan="3"/>
   <label name="only_installed"/>

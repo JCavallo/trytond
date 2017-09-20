@@ -103,4 +103,5 @@ def register():
     Pool.register(
         ModelGraph,
         ModelWorkflowGraph,
+        ModuleGraph,
         module='ir', type_='report')

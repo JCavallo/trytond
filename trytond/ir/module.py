@@ -684,6 +684,7 @@ class ModuleGraph(Report):
         graph.set('center', '1')
         graph.set('ratio', 'auto')
         graph.set('rankdir', 'BT')
+        graph.set('ranksep', '4')
         return graph
 
     @classmethod
@@ -702,10 +703,16 @@ class ModuleGraph(Report):
 
         nodes = {}
         modules = {}
-        module_domain = ([('state', '=', 'installed')]
+        node_instances = {}
+        module_domain = ([('state', '=', 'activated')]
             if data['only_installed'] else [])
         for module in Module.search(module_domain):
-            graph.add_node(cls.create_node(module))
+            if module.name in ('ugip', 'ugip_migration', 'prevere',
+                    'spb_family', 'santiane', 'test_module', 'roederer',
+                    'roederer_migration', 'roederer_interface'):
+                continue
+            node_instances[module.name] = cls.create_node(module)
+            graph.add_node(node_instances[module.name])
             nodes[module.name] = [x.name for x in module.parents]
             modules[module.name] = module
 
@@ -733,11 +740,11 @@ class ModuleGraph(Report):
 
         dependencies = {}
         for k, v in nodes.iteritems():
-            final = dependencies.get(k, [[], []])[0]
-            found = dependencies.get(k, [[], []])[1]
+            final, found = dependencies.get(k, [[], []])
             for dep in v:
                 if dep in found:
                     continue
+                final.append(dep)
                 for new_parent in get_parents(modules[dep]):
                     if new_parent in final:
                         final.pop(final.index(new_parent))
@@ -745,10 +752,19 @@ class ModuleGraph(Report):
                     if new_parent in found:
                         continue
                     found.append(new_parent)
-                final.append(dep)
                 found.append(dep)
             dependencies[k] = [list(set(final)), list(set(found))]
 
+        numbers = {name: [0, node]
+            for name, node in node_instances.iteritems()}
         for k, v in dependencies.iteritems():
             for dep in v[0]:
                 graph.add_edge(pydot.Edge(k, dep, arrowhead="normal"))
+                numbers[dep][0] += 4
+            for dep in v[1]:
+                numbers[dep][0] += 2
+
+        for _, (number, node) in numbers.iteritems():
+            node.set('style', 'filled')
+            color = 256 - min(int(number * 256.0 / len(numbers)), 256)
+            node.set('fillcolor', '#FF%.2X%.2X' % (color, color))
