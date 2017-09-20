@@ -78,6 +78,7 @@ def register():
         ModuleConfigWizardDone,
         ModuleInstallUpgradeStart,
         ModuleInstallUpgradeDone,
+        PrintModuleGraphParameters,
         Cache,
         Date,
         Trigger,
@@ -92,10 +93,12 @@ def register():
         TranslationExport,
         ShowView,
         PrintModelGraph,
+        PrintModuleGraph,
         ModuleConfigWizard,
         ModuleInstallUpgrade,
         ModuleConfig,
         module='ir', type_='wizard')
     Pool.register(
         ModelGraph,
+        ModuleGraph,
         module='ir', type_='report')

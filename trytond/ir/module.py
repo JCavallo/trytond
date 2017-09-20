@@ -6,10 +6,12 @@ from functools import wraps
 
 from sql.operators import NotIn
 
+import logging
 from trytond.model import ModelView, ModelSQL, fields, Unique
 from trytond.modules import create_graph, get_module_list, get_module_info
 from trytond.wizard import Wizard, StateView, Button, StateTransition, \
     StateAction
+from trytond.report import Report
 from trytond import backend
 from trytond.pool import Pool
 from trytond.transaction import Transaction
@@ -21,8 +23,17 @@ __all__ = [
     'ModuleConfigWizardFirst', 'ModuleConfigWizardOther',
     'ModuleConfigWizardDone', 'ModuleConfigWizard',
     'ModuleInstallUpgradeStart', 'ModuleInstallUpgradeDone',
-    'ModuleInstallUpgrade', 'ModuleConfig',
+    'ModuleInstallUpgrade', 'ModuleConfig', 'PrintModuleGraph', 'ModuleGraph',
+    'PrintModuleGraphParameters',
     ]
+
+HAS_PYDOT = False
+try:
+    import pydot
+    HAS_PYDOT = True
+except ImportError:
+    logging.getLogger('ir').warning(
+            'Unable to import pydot, graph representation will be disabled')
 
 
 def filter_state(state):
@@ -592,3 +603,143 @@ class ModuleConfig(Wizard):
     @staticmethod
     def transition_start():
         return 'end'
+
+
+class PrintModuleGraphParameters(ModelView):
+    'Print Module Graph Parameters'
+
+    __name__ = 'ir.module.print_module_graph.parameters'
+
+    trim_links = fields.Boolean('Group dependencies with parents')
+    only_installed = fields.Boolean('Only installed modules')
+
+
+class PrintModuleGraph(Wizard):
+    __name__ = 'ir.module.print_module_graph'
+
+    start_state = 'check_pydot'
+    check_pydot = StateTransition()
+    parameters = StateView('ir.module.print_module_graph.parameters',
+        'ir.print_module_graph_parameters_form', [
+            Button('Cancel', 'end', 'tryton-cancel'),
+            Button('Generate', 'graph', 'tryton-go-next')])
+    graph = StateAction('ir.report_module_graph')
+
+    @classmethod
+    def __setup__(cls):
+        super(PrintModuleGraph, cls).__setup__()
+        cls._error_messages.update({
+            'no_pydot':
+            'Pydot cannot be found. This functionnality is disabled',
+        })
+
+    def do_graph(self, action):
+        return action, {
+            'trim_links': self.parameters.trim_links,
+            'only_installed': self.parameters.only_installed,
+            }
+
+    def transition_check_pydot(self):
+        if not HAS_PYDOT:
+            self.raise_user_error('no_pydot')
+        return 'parameters'
+
+    def transition_graph_(self):
+        return 'end'
+
+
+class ModuleGraph(Report):
+    __name__ = 'ir.module.graph'
+
+    @classmethod
+    def execute(cls, ids, data):
+        pool = Pool()
+        ActionReport = pool.get('ir.action.report')
+
+        action_report_ids = ActionReport.search([
+            ('report_name', '=', cls.__name__)
+            ])
+        if not action_report_ids:
+            raise Exception('Error', 'Report (%s) not find!' % cls.__name__)
+        action_report = ActionReport(action_report_ids[0])
+
+        graph = cls.create_graph()
+        cls.fill_graph(graph, data)
+        the_graph = graph.create(prog='dot', format='png')
+        return ('png', fields.Binary.cast(the_graph), False,
+            action_report.name)
+
+    @classmethod
+    def create_graph(cls):
+        graph = pydot.Dot(fontsize="8")
+        graph.set('center', '1')
+        graph.set('ratio', 'auto')
+        graph.set('rankdir', 'BT')
+        return graph
+
+    @classmethod
+    def create_node(cls, module):
+        # Could be overriden for instance to change color depending on the
+        # module state
+        return pydot.Node(module.name)
+
+    @classmethod
+    def fill_graph(cls, graph, data):
+        '''
+        We want the minimal dependencies on each module to avoid overly
+        complicated graphs.
+        '''
+        Module = Pool().get('ir.module')
+
+        nodes = {}
+        modules = {}
+        module_domain = ([('state', '=', 'installed')]
+            if data['only_installed'] else [])
+        for module in Module.search(module_domain):
+            graph.add_node(cls.create_node(module))
+            nodes[module.name] = [x.name for x in module.parents]
+            modules[module.name] = module
+
+        if not data['trim_links']:
+            for k, v in nodes.iteritems():
+                for dep in v:
+                    graph.add_edge(pydot.Edge(k, dep, arrowhead="normal"))
+            return
+
+        cache_res = {}
+
+        def get_parents(module, res=None):
+            if module.name in cache_res:
+                return cache_res[module.name]
+            add2cache = False
+            if not res:
+                res = set([])
+                add2cache = True
+            for elem in module.parents:
+                res.add(elem.name)
+                get_parents(elem, res)
+            if add2cache:
+                cache_res[module.name] = list(res)
+                return cache_res[module.name]
+
+        dependencies = {}
+        for k, v in nodes.iteritems():
+            final = dependencies.get(k, [[], []])[0]
+            found = dependencies.get(k, [[], []])[1]
+            for dep in v:
+                if dep in found:
+                    continue
+                for new_parent in get_parents(modules[dep]):
+                    if new_parent in final:
+                        final.pop(final.index(new_parent))
+                        continue
+                    if new_parent in found:
+                        continue
+                    found.append(new_parent)
+                final.append(dep)
+                found.append(dep)
+            dependencies[k] = [list(set(final)), list(set(found))]
+
+        for k, v in dependencies.iteritems():
+            for dep in v[0]:
+                graph.add_edge(pydot.Edge(k, dep, arrowhead="normal"))

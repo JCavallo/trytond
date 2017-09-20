@@ -132,5 +132,25 @@ this repository contains the full copyright notices and license terms. -->
             <field name="action" ref="act_module_config"/>
             <field name="sequence" eval="10000"/>
         </record>
+        <record model="ir.ui.view" id="print_module_graph_parameters_form">
+            <field name="model">ir.module.print_module_graph.parameters</field>
+            <field name="type">form</field>
+            <field name="name">print_module_graph_parameters_form</field>
+        </record>
+        <record model="ir.action.report" id="report_module_graph">
+            <field name="name">Graph</field>
+            <field name="model">ir.module</field>
+            <field name="report_name">ir.module.graph</field>
+        </record>
+        <record model="ir.action.wizard" id="print_module_graph">
+            <field name="name">Graph</field>
+            <field name="wiz_name">ir.module.print_module_graph</field>
+            <field name="model">ir.module</field>
+        </record>
+        <record model="ir.action.keyword" id="print_module_graph_keyword">
+            <field name="keyword">form_print</field>
+            <field name="model">ir.module,-1</field>
+            <field name="action" ref="print_module_graph"/>
+        </record>
     </data>
 </tryton>

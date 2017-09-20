@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<form string="Parameters">
+  <label name="trim_links"/>
+  <field name="trim_links" colspan="3"/>
+  <label name="only_installed"/>
+  <field name="only_installed" colspan="3"/>
+</form>
